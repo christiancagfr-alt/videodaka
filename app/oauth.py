@@ -3,7 +3,10 @@ import hashlib
 import json
 
 SERVICE='DevotionFlow Google OAuth'
-SCOPES=['openid','email','https://www.googleapis.com/auth/spreadsheets']
+# Use Google's canonical URI for the email scope. The short alias `email` is
+# returned as `userinfo.email` by Google's token endpoint, which oauthlib treats
+# as a scope change and rejects during the desktop OAuth callback.
+SCOPES=['openid','https://www.googleapis.com/auth/userinfo.email','https://www.googleapis.com/auth/spreadsheets']
 
 def oauth_client_id(path):
     from pathlib import Path

@@ -10,8 +10,7 @@ from app.core import Tracker
 from app.downloads import download_arguments,find_ffmpeg
 from app.sync import insert_latest_log_row
 from app.updates import version_tuple, latest_release
-from app.oauth import oauth_client_id, _store
-from app.oauth import login
+from app.oauth import oauth_client_id, _store,login,SCOPES
 
 
 class SecurityTests(unittest.TestCase):
@@ -58,6 +57,8 @@ class SecurityTests(unittest.TestCase):
              patch('app.oauth.save_tokens') as save, \
              patch('app.oauth.load_credentials',return_value=credentials) as readback:
             self.assertEqual(login('client.json'),('sample.apps.googleusercontent.com','reader@example.test'))
+            self.assertNotIn('email',SCOPES)
+            self.assertIn('https://www.googleapis.com/auth/userinfo.email',SCOPES)
         save.assert_called_once_with('sample.apps.googleusercontent.com',credentials)
         readback.assert_called_once_with('sample.apps.googleusercontent.com')
 

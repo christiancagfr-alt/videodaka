@@ -29,5 +29,5 @@ collection=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='DevotionFl
 if sys.platform=='darwin':
     app=BUNDLE(collection,name='DevotionFlow.app',bundle_identifier='app.devotionflow.desktop',
                icon=str(root/'assets/devotionflow.icns'),
-               info_plist={'CFBundleShortVersionString':'0.2.1','CFBundleVersion':'3',
+               info_plist={'CFBundleShortVersionString':'0.2.2','CFBundleVersion':'4',
                            'NSHighResolutionCapable':True})
