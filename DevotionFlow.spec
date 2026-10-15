@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import os
 from PyInstaller.utils.hooks import collect_all, copy_metadata, collect_data_files
 
 root=Path(SPECPATH)
@@ -16,7 +17,7 @@ datas+=collect_data_files('PySide6',includes=['**/LICENSE*','**/licenses/**'])
 a=Analysis([str(root/'main.py')],pathex=[str(root)],binaries=binaries,datas=datas,
            hiddenimports=hiddenimports,excludes=['tkinter','pytest','pip'],noarchive=False)
 pyz=PYZ(a.pure)
-exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='DevotionFlow',console=False,
+exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='DevotionFlow',console=os.environ.get('DEVOTION_BUILD_CONSOLE')=='1',
         debug=False,strip=False,upx=False,argv_emulation=False,
         codesign_identity=None,entitlements_file=None)
 collection=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='DevotionFlow')
