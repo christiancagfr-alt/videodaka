@@ -17,7 +17,7 @@ Windows 源码版可双击“启动.bat”。Linux/macOS 安装依赖后运行 m
 
 仓库的 **Actions → Build installers** 为 Windows x64、macOS Apple Silicon 和 macOS Intel 分别构建安装包。推送 main 或手动运行即可触发；完成后从对应任务的 Artifacts 下载 EXE 安装程序或 DMG。每个产物附带 SHA-256 校验文件。
 
-这些是未使用商业证书签名、未经 Apple 公证的测试安装包，Windows SmartScreen 和 macOS Gatekeeper 可能提示开发者身份未验证。仅从本仓库下载并核对校验值；正式分发需要配置签名证书及公证流程。macOS 使用 DMG 中的应用拖入 Applications 安装。Windows 安装到当前用户目录，无需管理员权限。
+这些是未使用商业证书签名、未经 Apple 公证的测试安装包，Windows SmartScreen 和 macOS Gatekeeper 可能提示开发者身份未验证。仅从本仓库下载并核对校验值；正式分发需要配置签名证书及公证流程。macOS 使用 DMG 中的应用拖入 Applications 安装。Windows 安装到当前用户目录，无需管理员权限。应用启动后会自动检查 GitHub 最新正式版本；发现更新时会提示并打开官方发布页，由用户下载适配当前系统的安装包。检查失败不会影响使用。
 
 构建使用 Python 3.12 的可用最新补丁版本、带哈希的依赖锁文件、PyInstaller 目录模式和 Inno Setup。可以在对应系统执行：
 
@@ -26,13 +26,13 @@ python -m pip install --only-binary=:all: --require-hashes -r build-requirements
 python packaging/build.py
 ```
 
-Windows 本机构建需安装 Inno Setup 6；macOS 使用系统 hdiutil。不能在 Windows 上直接生成可用的 macOS 应用。构建会测试打包后的网页渲染、全屏和下载器启动；不会带入个人表格、授权 JSON、浏览器 Cookie 或观看记录。FFmpeg、Node 是可选外部下载运行组件，需从各自官方渠道安装；未随安装包捆绑。
+Windows 本机构建需安装 Inno Setup 6；macOS 使用系统 hdiutil。不能在 Windows 上直接生成可用的 macOS 应用。构建会测试打包后的网页渲染、全屏和下载器启动；不会带入个人表格、授权 JSON、浏览器 Cookie 或观看记录。下载需要 FFmpeg 合并高画质音视频；首次下载时若检测不到 FFmpeg，默认通过 Windows winget 或 macOS Homebrew 自动安装，也可以在下载设置关闭自动安装并手动指定程序路径。Node 为可选组件。
 
-安装版数据保存到系统当前用户的应用数据目录（Qt AppLocalDataLocation/DevotionFlow），源码版仍使用项目的 data 目录。可通过 `--data-dir` 指定数据目录。迁移时先关闭程序，再复制原数据，并重新选择有效的服务账号文件路径；卸载不会主动删除个人数据。
+安装版数据保存到系统当前用户的应用数据目录（Qt AppLocalDataLocation/DevotionFlow），源码版仍使用项目的 data 目录。可通过 `--data-dir` 指定数据目录。迁移时先关闭程序，再复制原数据，并重新选择 Google OAuth 桌面应用 JSON；卸载不会主动删除个人数据。
 
 ## 日常操作
 
-播放页新增“截图”和“下载”：截图将内嵌浏览器区域保存为 PNG。下载采用 yt-dlp，默认最高 1080p，可选 720p、1440p、2160p 或源视频最高画质；在设置或下载窗口选择路径。需要 FFmpeg 合并高画质音视频，默认输出 MKV 以兼容源编码。程序自动检测 PATH 中的 FFmpeg/Node，也可在设置中指定 FFmpeg。清晰度受源视频实际格式限制。
+播放页新增“截图”和“下载”：截图只保存 YouTube 视频画面区域，不包含播放器周围界面；截图设置中可配置目录及每 5、10、15、30 或 60 秒自动截取（仅播放期间）。自动截图默认关闭，手动截图按钮直接抓拍并保存。下载采用 yt-dlp，默认最高 1080p，可选 720p、1440p、2160p 或源视频最高画质；在独立下载设置中选择“边看边下载”和保存路径。默认输出 MKV 以兼容源编码。清晰度受源视频实际格式限制。
 
 在含 `list=` 的 YouTube 链接上点击“下载 → 同步当前播放列表”，软件会读取列表并批量下载，保存下载档案、跳过已完成视频；下次再次点击同步可下载列表新增视频。下载时可以继续观看，关闭下载窗口不停止任务；“停止下载”或退出主程序会停止进程，部分文件保留供再次启动续传。当前没有后台定时巡检列表功能。登录限制、网站变动或源格式不可用会在下载窗口显示错误。
 
@@ -56,7 +56,7 @@ Windows 本机构建需安装 Inno Setup 6；macOS 使用系统 hdiutil。不能
 
 ## Google Sheets 配置
 
-启用 Sheets API，创建服务账号，在本地选择 JSON 密钥。把目标表分享给密钥中 client_email 并授予编辑权限。软件只保存密钥路径，不复制密钥内容。设置填入 Spreadsheet ID（链接 /d/ 与 /edit 之间）、准确的工作表名称，并切换 google。
+在 Google Cloud Console 启用 Google Sheets API，创建 OAuth Client ID 并选择“桌面应用”，下载 JSON。在设置页选择该桌面应用文件，再点击“连接 Google 账号”；应用会打开系统默认浏览器，让你登录 Google 并同意 Sheets 授权。访问令牌与刷新令牌保存在 Windows Credential Locker 或 macOS Keychain，不写入配置文件。选定的 Google 账号仍必须拥有目标表格的访问权限；OAuth 登录替代服务账号密钥和手动复制服务账号邮箱，但不会绕过 Google Sheets 的表格权限。最后填写 Spreadsheet ID（链接 `/d/` 与 `/edit` 之间）、准确工作表名称并切换同步模式为 `google`。OAuth 同意屏幕若处于测试状态，需将登录账号加入测试用户。
 
 样例仅用于验证，没有固定绑定其 ID。汇总样例日期表头第 1 行、分类第 2 行、姓名 A 列、人员从第 5 行开始，每天一个合并日期块，“认识”列追加感想。姓名为空时必须先在真实表中填写。日期需为完整日期（真实日期数值或 YYYY-MM-DD 等格式）；程序按返回的计算结果识别日期，并将日期沿分类表头向右继承。日期、类别、姓名重复匹配会阻止汇总更新。分类计数或认识栏若为公式，会拒绝覆盖。
 
@@ -70,7 +70,7 @@ Windows 本机构建需安装 Inno Setup 6；macOS 使用系统 hdiutil。不能
 
 日志用记录ID去重。汇总单元格备注逐行追加 `• 《视频标题》`，去重ID保存到表格 developer metadata，与计数、备注和认识通过同一个 Sheets batchUpdate 写入。失败后重试先检查元数据，也兼容旧版备注中的ID标记。已有旧备注不会自动改写，请保留旧标记以兼容历史重试。Google Sheets 没有用于此方案的比较交换事务：多个设备同时修改同一单元格仍可能丢失更新，日志读后追加也无法保证跨客户端严格一次。当前版本适合单写入客户端；多设备正式部署应增加集中式同步服务。单机同一数据目录有实例锁。
 
-YouTube 网页结构变化可能影响监测。Google 可能限制嵌入式浏览器登录，播放编解码器支持取决于 QtWebEngine 发行包；没有尝试绕过登录限制。真实登录、视频播放及 Google API 写入需要用户账号和服务账号进行验收，当前不等同于已经验证这些外部功能。
+YouTube 网页结构变化可能影响监测。Google 可能限制嵌入式浏览器登录，播放编解码器支持取决于 QtWebEngine 发行包；没有尝试绕过登录限制。真实 OAuth 登录、视频播放及 Google API 写入仍需要用户的 Google Cloud OAuth 配置和账号进行验收。
 
 ## 参考
 

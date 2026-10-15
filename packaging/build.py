@@ -11,11 +11,28 @@ import tempfile
 
 root=Path(__file__).resolve().parents[1]
 os.chdir(root)
+subprocess.run([sys.executable,'packaging/icons.py'],check=True)
+if sys.platform=='darwin':
+    import shutil
+    iconset=root/'build/DevotionFlow.iconset'; iconset.mkdir(parents=True,exist_ok=True)
+    from PySide6.QtCore import Qt,QSize
+    from PySide6.QtGui import QImage,QPainter
+    from PySide6.QtSvg import QSvgRenderer
+    renderer=QSvgRenderer(str(root/'assets/devotionflow.svg'))
+    for size in (16,32,128,256,512):
+        for factor in (1,2):
+            pixels=size*factor; image=QImage(QSize(pixels,pixels),QImage.Format.Format_ARGB32_Premultiplied); image.fill(Qt.transparent)
+            painter=QPainter(image); renderer.render(painter); painter.end()
+            suffix='@2x' if factor==2 else ''
+            image.save(str(iconset/f'icon_{size}x{size}{suffix}.png'))
+    subprocess.run(['iconutil','-c','icns',str(iconset),'-o',str(root/'assets/devotionflow.icns')],check=True)
 subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','DevotionFlow.spec'],check=True)
 release=root/'release'; release.mkdir(exist_ok=True)
 executable=root/'dist'/('DevotionFlow/DevotionFlow.exe' if sys.platform=='win32' else 'DevotionFlow.app/Contents/MacOS/DevotionFlow')
 with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
-    subprocess.run([str(executable),'--smoke','--data-dir',temp],check=True,timeout=120)
+    smoke_env=os.environ.copy()
+    smoke_env.setdefault('QTWEBENGINE_CHROMIUM_FLAGS','--disable-gpu --disable-gpu-compositing --disable-features=VizDisplayCompositor --use-gl=angle --use-angle=swiftshader --no-sandbox')
+    subprocess.run([str(executable),'--smoke','--data-dir',temp],check=True,timeout=120,env=smoke_env)
     evidence=json.loads((Path(temp)/'browser-check.json').read_text('utf-8'))
     if '本地演示' not in str(evidence['document']): raise RuntimeError('Packaged WebEngine did not render the demo')
     worker=subprocess.run([str(executable),'--download-worker','--ignore-config','--no-plugin-dirs','--version'],
@@ -40,7 +57,7 @@ else:
     subprocess.run(['ditto',str(root/'dist/DevotionFlow.app'),str(staging/'DevotionFlow.app')],check=True)
     link=staging/'Applications'
     if not link.exists(): link.symlink_to('/Applications')
-    target=release/f'DevotionFlow-0.1.0-macos-{platform.machine()}.dmg'
+    target=release/f'DevotionFlow-0.2.0-macos-{platform.machine()}.dmg'
     subprocess.run(['hdiutil','create','-ov','-volname','DevotionFlow','-srcfolder',str(staging),
                     '-format','UDZO',str(target)],check=True)
 checksums=[]

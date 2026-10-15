@@ -1,6 +1,6 @@
 import json
 from .core import HEADERS, locate, log_values
-from .security import load_service_account,safe_error
+from .security import safe_error
 
 class LocalSheets:
     def __init__(self, store): self.store=store
@@ -16,11 +16,19 @@ class LocalSheets:
             db.execute('INSERT OR REPLACE INTO local_summary VALUES(?,?,?)',(key,(old['count'] if old else 0)+1,text))
             db.execute('INSERT INTO local_applied VALUES(?)',(r['id'],))
 
+def insert_latest_log_row(worksheet, headers, values, record_id, header_row=1):
+    """Insert new records directly below the header and remain idempotent on retries."""
+    id_column=headers.index('记录ID')+1
+    if record_id in worksheet.col_values(id_column): return False
+    worksheet.insert_row(values,index=header_row+1,value_input_option='RAW',inherit_from_before=False)
+    return True
+
 class GoogleSheets:
     def __init__(self,cfg):
         import gspread
-        from google.oauth2.service_account import Credentials
-        credentials=Credentials.from_service_account_info(load_service_account(cfg['credentials']),scopes=['https://www.googleapis.com/auth/spreadsheets'])
+        from .oauth import load_credentials,oauth_client_id
+        credentials=load_credentials(oauth_client_id(cfg['oauth_client_file']))
+        if credentials is None: raise ValueError('请先在设置中连接 Google 账号')
         self.client=gspread.authorize(credentials)
         self.client.set_timeout(25)
     def sheet(self,key,title): return self.client.open_by_key(key).worksheet(title)
@@ -42,9 +50,8 @@ class GoogleSheets:
             log.update(range_name=f"{rowcol_to_a1(cfg['log_header_row'],len(header)+1)}:{rowcol_to_a1(cfg['log_header_row'],end)}",values=[missing],raw=True)
             header+=missing
         if any(header.count(h)!=1 for h in HEADERS): raise ValueError('日志表存在重复字段名')
-        if r['id'] not in log.col_values(header.index('记录ID')+1):
-            mapping=dict(zip(HEADERS,log_values(r)))
-            log.append_row([mapping.get(h,'') for h in header],value_input_option='RAW')
+        mapping=dict(zip(HEADERS,log_values(r)))
+        insert_latest_log_row(log,header,[mapping.get(h,'') for h in header],r['id'],cfg['log_header_row'])
         if r['ratio']<.95: return
         ws=self.sheet(cfg['summary_id'],cfg['summary_sheet'])
         values=ws.get_all_values(value_render_option='UNFORMATTED_VALUE')

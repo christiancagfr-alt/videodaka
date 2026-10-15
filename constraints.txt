@@ -10,7 +10,12 @@ google-auth==2.56.2
 google-auth-oauthlib==1.4.0
 gspread==6.2.1
 idna==3.15
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+keyring==25.7.0
 macholib==1.16.4 ; sys_platform == "darwin"
+more-itertools==11.2.1
 mutagen==1.48.1
 oauthlib==4.0.0
 openpyxl==3.1.5

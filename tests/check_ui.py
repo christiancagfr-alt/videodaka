@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QPixmap,QColor,QWheelEvent
-from PySide6.QtCore import Qt,QPointF,QPoint
+from PySide6.QtCore import Qt,QPointF,QPoint,QEventLoop,QTimer
 from app.ui import Window
 
 app=QApplication([])
@@ -35,9 +35,14 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     window.category.clearFocus(); original=window.category.currentText()
     wheel=QWheelEvent(QPointF(5,5),QPointF(5,5),QPoint(0,0),QPoint(0,-120),Qt.NoButton,Qt.NoModifier,Qt.NoScrollPhase,False)
     window.category.wheelEvent(wheel); assert window.category.currentText()==original and not wheel.isAccepted()
-    with patch('app.ui.QFileDialog.getSaveFileName',return_value=(str(root/'capture.png'),'PNG')):
-        window.screenshot()
-    assert (root/'capture.png').exists()
+    window.cfg['screenshot_dir']=str(root)
+    scale=window.browser.grab().width()/window.browser.width()
+    window.save_video_frame({'x':10,'y':10,'w':80,'h':60,'playing':False},automatic=False)
+    wait=QEventLoop(); QTimer.singleShot(250,wait.quit); wait.exec()
+    captures=list(root.glob('*-test.png'))
+    assert len(captures)==1
+    shot=QPixmap(str(captures[0]))
+    assert shot.width()==round(80*scale) and shot.height()==round(60*scale)
     window.close(); app.processEvents()
     # WebEngine releases files asynchronously, so no deletion is required for this check.
     print('PASS: automatic registration, duplicate prevention, image upload, sidebar, hover status')

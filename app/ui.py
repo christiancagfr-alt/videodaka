@@ -1,25 +1,33 @@
 import calendar
 import json
+import weakref
 from datetime import date
 from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, QTimer, QThread, Signal, QDate, QRectF, QSize
-from PySide6.QtGui import QColor, QTextCharFormat, QPainter, QPen, QShortcut, QKeySequence, QPixmap, QIcon, QPainterPath, QImageReader, QLinearGradient
+from PySide6.QtGui import QColor, QTextCharFormat, QPainter, QPen, QShortcut, QKeySequence, QPixmap, QIcon, QPainterPath, QImageReader, QLinearGradient, QDesktopServices
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,
     QPushButton,QLineEdit,QTextEdit,QComboBox,QProgressBar,QSplitter,QTabWidget,QCalendarWidget,
-    QDialog,QFormLayout,QSpinBox,QDialogButtonBox,QFileDialog,QMessageBox,QTableWidget,QTableWidgetItem,QScrollArea,QGridLayout,QFrame,QStackedWidget)
+    QDialog,QFormLayout,QSpinBox,QDialogButtonBox,QFileDialog,QMessageBox,QTableWidget,QTableWidgetItem,QScrollArea,QGridLayout,QFrame,QStackedWidget,QCheckBox)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineProfile,QWebEnginePage,QWebEngineSettings
 from .core import Store,Tracker,DEFAULTS
 from .sync import sync_pending,GoogleSheets
 from .downloads import DownloadDialog
-from .security import load_service_account,safe_error,is_youtube_url,validate_sample,valid_video_id
+from .security import safe_error,is_youtube_url,validate_sample,valid_video_id
+
+_BACKGROUND_WORKERS=set()
+
+def retain_background_worker(worker):
+    _BACKGROUND_WORKERS.add(worker)
+    ref=weakref.ref(worker)
+    worker.finished.connect(lambda:_BACKGROUND_WORKERS.discard(ref()))
 
 class BrowserPage(QWebEnginePage):
     def __init__(self,*args): super().__init__(*args); self.allow_local_demo=False
     def acceptNavigationRequest(self,url,kind,is_main_frame):
         if url.scheme() in ('http','https'): return True
         if self.allow_local_demo and url.scheme()=='data':
-            self.allow_local_demo=False; return True
+            return True
         return url.toString()=='about:blank'
 
 class QComboBox(QComboBox):
@@ -62,34 +70,69 @@ class Worker(QThread):
         except Exception as e: self.result.emit((False,safe_error(e)))
         finally: store.db.close()
 
+class OAuthWorker(QThread):
+    result=Signal(object)
+    def __init__(self,path): super().__init__(); self.path=path
+    def run(self):
+        try:
+            from .oauth import login
+            self.result.emit((True,login(self.path)))
+        except Exception as e: self.result.emit((False,safe_error(e)))
+
+class UpdateWorker(QThread):
+    result=Signal(object)
+    def run(self):
+        try:
+            from .updates import latest_release
+            self.result.emit((True,latest_release()))
+        except Exception as e: self.result.emit((False,safe_error(e)))
+
 class Settings(QDialog):
     def __init__(self,cfg,parent,embedded=False):
         super().__init__(parent); self.owner=parent; self.setWindowTitle('设置与表格映射'); self.resize(600,720); self.fields={}
         layout=QVBoxLayout(self); scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); form=QFormLayout(body); scroll.setWidget(body); layout.addWidget(scroll)
-        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'服务账号 JSON 路径','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
-        labels.update(download_dir='视频下载目录',download_quality='默认最高分辨率',ffmpeg_path='FFmpeg 可执行文件')
+        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
         for k,label in labels.items():
             if k=='avatar': k='avatar_path'; label='头像图片'
-            sections={'operator':'登记人设置','credentials':'Google 服务账号授权','log_id':'谷歌表格绑定','date_row':'表格字段映射','daily_goal':'日历与成长目标','theme':'外观与个人资料','log_header_row':'日志与分类字段映射'}
+            sections={'operator':'登记人设置','credentials':'Google 账号连接','log_id':'谷歌表格绑定','date_row':'表格字段映射','daily_goal':'日历与成长目标','theme':'外观与个人资料','watch_download':'下载设置','log_header_row':'日志与分类字段映射'}
             if k in sections:
                 heading=QLabel(sections[k]); heading.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(heading)
             v=cfg[k]
-            if k in ('mode','theme','download_quality'):
-                widget=QComboBox(); widget.addItems(['local','google'] if k=='mode' else ['720','1080','1440','2160','best'] if k=='download_quality' else ['dark','light']); widget.setCurrentText(v)
+            if k=='watch_download':
+                widget=QCheckBox('播放时自动下载当前视频'); widget.setChecked(bool(v))
+            elif k=='auto_install_ffmpeg':
+                widget=QCheckBox('缺少 FFmpeg 时自动安装'); widget.setChecked(bool(v))
+            elif k in ('mode','theme','download_quality'):
+                widget=QComboBox()
+                if k=='mode': widget.addItems(['local','google'])
+                elif k=='download_quality': widget.addItems(['720','1080','1440','2160','best'])
+                else:
+                    for name,code in [('清新绿','sage'),('清新红','rose'),('暗黑','dark')]: widget.addItem(name,code)
+                    widget.setCurrentIndex(max(0,widget.findData({'light':'sage'}.get(v,v))))
+                if k!='theme': widget.setCurrentText(v)
             elif isinstance(v,int): widget=QSpinBox(); widget.setRange(1,10000); widget.setValue(v)
             else: widget=QLineEdit(str(v))
             self.fields[k]=widget
             if k in ('credentials','avatar_path'):
-                widget.setReadOnly(True); widget.setPlaceholderText('未选择服务账号文件')
+                widget.setReadOnly(True); widget.setPlaceholderText('未选择 OAuth 桌面应用文件')
                 row=QWidget(); line=QHBoxLayout(row); line.setContentsMargins(0,0,0,0); line.addWidget(widget,1)
-                choose=QPushButton('选择图片…' if k=='avatar_path' else '选择文件…'); choose.setObjectName('primary'); choose.clicked.connect(self.choose_avatar if k=='avatar_path' else self.choose); line.addWidget(choose)
+                choose=QPushButton('选择图片…' if k=='avatar_path' else '选择 OAuth 文件…'); choose.setObjectName('primary'); choose.clicked.connect(self.choose_avatar if k=='avatar_path' else self.choose); line.addWidget(choose)
+                if k=='credentials':
+                    authorize=QPushButton('连接 Google 账号'); authorize.clicked.connect(self.owner.authorize_google); line.addWidget(authorize)
                 if k=='avatar_path': widget.setPlaceholderText('上传 PNG / JPG / WebP 图片')
-                form.addRow(label if k=='avatar_path' else '服务账号',row)
+                form.addRow(label if k=='avatar_path' else '桌面应用 OAuth 配置',row)
             elif k in ('download_dir','ffmpeg_path'):
                 row=QWidget(); line=QHBoxLayout(row); line.setContentsMargins(0,0,0,0); line.addWidget(widget,1)
                 choose=QPushButton('选择…'); choose.clicked.connect(lambda checked=False,key=k:self.choose_download_path(key)); line.addWidget(choose); form.addRow(label,row)
+            elif k in ('watch_download','auto_install_ffmpeg'):
+                form.addRow(widget)
             else: form.addRow(label,widget)
-        hint=QLabel('local：仅本地模拟。google：登记后写入配置的在线表。\n每条待同步记录保存当时的配置，切换模式不会迁移旧记录。'); hint.setWordWrap(True); form.addRow(hint)
+        section=QLabel('下载设置'); section.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(section)
+        download_button=QPushButton('打开独立下载设置…'); download_button.clicked.connect(parent.open_download_settings); form.addRow(download_button)
+        download_status=QLabel('选择边看边下载、画质、保存目录及缺少 FFmpeg 时的安装方式。'); download_status.setWordWrap(True); form.addRow(download_status)
+        hint=QLabel('选择桌面应用 OAuth JSON，点击连接并在浏览器中选择 Google 邮箱。令牌保存到系统凭据库。该 Google 账号须能访问目标表格。'); hint.setWordWrap(True); form.addRow(hint)
+        update=QPushButton('检查软件更新'); update.clicked.connect(lambda:parent.check_for_updates(manual=True)); form.addRow(update)
+        screenshot=QPushButton('截图设置…'); screenshot.clicked.connect(parent.open_screenshot_settings); form.addRow(screenshot)
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText('保存设置'); buttons.button(QDialogButtonBox.Cancel).setText('恢复已保存设置')
         if embedded:
@@ -97,10 +140,11 @@ class Settings(QDialog):
         else: buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
     def choose(self):
-        path,_=QFileDialog.getOpenFileName(self,'选择密钥','','JSON (*.json)')
+        path,_=QFileDialog.getOpenFileName(self,'选择 Google 桌面应用 OAuth 配置','','JSON (*.json)')
         if path:
             try:
-                load_service_account(path)
+                from .oauth import oauth_client_id
+                oauth_client_id(path)
             except (OSError,ValueError) as e:
                 QMessageBox.warning(self,'文件不可用',str(e)); return
             self.fields['credentials'].setText(path); self.fields['credentials'].setToolTip(path)
@@ -127,7 +171,7 @@ class Settings(QDialog):
             QMessageBox.warning(self,'保存失败','头像文件无法保存。'); return
         self.fields['avatar_path'].setText(str(target.resolve()))
     def values(self):
-        return {k:(w.value() if isinstance(w,QSpinBox) else w.currentText() if isinstance(w,QComboBox) else w.text().strip()) for k,w in self.fields.items()}
+        return {k:(w.value() if isinstance(w,QSpinBox) else w.isChecked() if isinstance(w,QCheckBox) else w.currentData() if k=='theme' else w.currentText() if isinstance(w,QComboBox) else w.text().strip()) for k,w in self.fields.items()}
 
 class HabitCalendar(QCalendarWidget):
     def __init__(self):
@@ -220,10 +264,12 @@ class ReviewChart(QWidget):
 
 class Window(QMainWindow):
     def __init__(self,root,offline=False):
-        super().__init__(); self.store=Store(root); self.cfg=self.store.config(); self.tracker=Tracker(); self.worker=None; self.offline=offline
+        super().__init__(); self.store=Store(root); self.cfg=self.store.config(); self.tracker=Tracker(); self.worker=None; self.oauth_worker=None; self.offline=offline
         self.setWindowTitle('静心 · 视频学习与灵修'); self.resize(1420,930)
+        icon=QIcon(str(Path(__file__).resolve().parents[1]/'assets'/'devotionflow.png'))
+        self.setWindowIcon(icon)
         outer=QWidget(); layout=QVBoxLayout(outer); self.setCentralWidget(outer)
-        bar=QHBoxLayout(); brand=QLabel('静心片刻，让所见成为成长'); brand.setStyleSheet('font-size:20px;font-weight:600'); bar.addWidget(brand); bar.addStretch()
+        bar=QHBoxLayout(); brand=QLabel(); brand.setPixmap(QPixmap(str(Path(__file__).resolve().parents[1]/'assets'/'devotionflow.png')).scaled(40,40,Qt.KeepAspectRatio,Qt.SmoothTransformation)); bar.addWidget(brand); title=QLabel('静心片刻，让所见成为成长'); title.setStyleSheet('font-size:20px;font-weight:600'); bar.addWidget(title); bar.addStretch()
         for title,callback in [('打开 YouTube',self.open_youtube),('切换主题',self.toggle_theme),('设置',self.settings),('重试同步',self.sync)]:
             b=QPushButton(title); b.clicked.connect(callback); bar.addWidget(b)
         layout.addLayout(bar); self.banner=QLabel(); layout.addWidget(self.banner)
@@ -282,13 +328,17 @@ class Window(QMainWindow):
         self.browser.loadStarted.connect(lambda:self.browser_status.setText('正在加载 YouTube…'))
         self.browser.loadFinished.connect(self.loaded)
         self.browser_status=QLabel('内嵌 YouTube · 可搜索、登录及播放'); ll.insertWidget(1,self.browser_status)
-        self.build_pages(layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals)
+        self.build_pages(layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals,brand)
         self.probe=Path(__file__).with_name('probe.js').read_text('utf-8'); self.timer=QTimer(self); self.timer.timeout.connect(self.poll); self.timer.start(500)
         self.retry=QTimer(self); self.retry.timeout.connect(self.sync); self.retry.start(60000)
         self.apply_theme(); self.refresh()
         for label in self.findChildren(QLabel): label.setTextFormat(Qt.PlainText)
         self.resume_position=None; self.draft_loading=False
         self.download_dialog=DownloadDialog(self)
+        self.update_worker=None
+        self._screenshot_pending=False
+        self.screenshot_timer=QTimer(self); self.screenshot_timer.timeout.connect(self.capture_scheduled_screenshot)
+        if self.cfg.get('screenshot_interval',0): self.screenshot_timer.start(self.cfg['screenshot_interval']*1000)
         self.draft_timer=QTimer(self); self.draft_timer.setSingleShot(True); self.draft_timer.timeout.connect(self.save_draft)
         self.reflection.textChanged.connect(self.schedule_draft); self.category.currentTextChanged.connect(self.schedule_draft)
         self.autosave=QTimer(self); self.autosave.timeout.connect(self.save_draft); self.autosave.start(1000)
@@ -299,6 +349,7 @@ class Window(QMainWindow):
                 self.restore_draft(saved); self.browser.setUrl(QUrl('https://www.youtube.com/watch?v='+saved))
                 self.status.setText('已恢复上次视频、观看进度、分类和感想。')
             else: self.browser.setUrl(QUrl('https://www.youtube.com/?hl=zh-CN'))
+            QTimer.singleShot(3500,self.check_for_updates)
     def draft_scope(self): return self.cfg['mode']+':'+self.cfg['operator']
     def schedule_draft(self,*args):
         if not self.draft_loading: self.draft_timer.start(350)
@@ -319,17 +370,118 @@ class Window(QMainWindow):
         else: self.reflection.clear(); self.resume_position=None
         self.draft_loading=False
     def screenshot(self):
+        self.capture_video_frame(automatic=False)
+    def capture_scheduled_screenshot(self):
+        self.capture_video_frame(automatic=True)
+    def capture_video_frame(self,automatic):
+        if self._screenshot_pending: return
+        if not is_youtube_url(self.browser.url().toString()):
+            if not automatic: self.status.setText('请先在 YouTube 打开一个视频，再进行截图。')
+            return
+        self._screenshot_pending=True
+        script='''(()=>{const v=document.querySelector("video");if(!v||!v.videoWidth||!v.videoHeight)return null;const player=v.closest(".html5-video-player");const selectors=".ytp-chrome-top,.ytp-chrome-bottom,.ytp-gradient-top,.ytp-gradient-bottom,.ytp-title,.ytp-title-channel,.ytp-pause-overlay,.ytp-cued-thumbnail-overlay,.ytp-ce-element,.ytp-ce-covering-overlay,.ytp-endscreen-content,.ytp-bezel-text,.ytp-caption-window-container,.ytp-watermark,.ytp-iv-player-content";window.__devotionCaptureHidden=[];if(player)for(const e of player.querySelectorAll(selectors)){window.__devotionCaptureHidden.push([e,e.style.visibility]);e.style.visibility="hidden";}const r=v.getBoundingClientRect(),x=Math.max(0,r.left),y=Math.max(0,r.top),right=Math.min(innerWidth,r.right),bottom=Math.min(innerHeight,r.bottom);if(right<=x||bottom<=y)return null;return {x,y,w:right-x,h:bottom-y,playing:!v.paused&&!v.ended};})()'''
+        self.browser.page().runJavaScript(script,lambda rect:self.save_video_frame(rect,automatic))
+    def save_video_frame(self,rect,automatic):
+        if not isinstance(rect,dict) or not all(isinstance(rect.get(k),(int,float)) for k in ('x','y','w','h')):
+            self.restore_youtube_controls(); self._screenshot_pending=False
+            if not automatic: self.status.setText('当前页面没有可见的视频画面。')
+            return
+        if automatic and not rect.get('playing'):
+            self.restore_youtube_controls(); self._screenshot_pending=False; return
+        QTimer.singleShot(120,lambda:self._save_video_frame_now(rect,automatic))
+    def _save_video_frame_now(self,rect,automatic):
+        self._screenshot_pending=False
+        viewport=self.browser
+        pixmap=viewport.grab()
+        scale=pixmap.width()/max(1,viewport.width())
+        x=max(0,round(rect['x']*scale)); y=max(0,round(rect['y']*scale))
+        w=min(pixmap.width()-x,round(rect['w']*scale)); h=min(pixmap.height()-y,round(rect['h']*scale))
+        if w<=0 or h<=0:
+            self.restore_youtube_controls()
+            if not automatic: self.status.setText('视频区域当前不可见，无法截图。')
+            return
+        image=pixmap.copy(x,y,w,h)
+        self.restore_youtube_controls()
         from datetime import datetime
-        path,_=QFileDialog.getSaveFileName(self,'保存视频区域截图',str(self.store.root/f'screenshot-{datetime.now():%Y%m%d-%H%M%S}.png'),'PNG (*.png)')
-        if path:
-            ok=self.browser.grab().save(path,'PNG'); self.status.setText('截图已保存：'+path if ok else '截图保存失败')
+        directory=Path(self.cfg.get('screenshot_dir') or (self.store.root/'screenshots')).expanduser()
+        try:
+            directory.mkdir(parents=True,exist_ok=True)
+            video_id=(self.tracker.video or 'youtube')[:128]
+            stamp=datetime.now().astimezone().strftime('%Y%m%d-%H%M%S-%f')
+            path=directory/f'{stamp}-{video_id}.png'
+            if not image.save(str(path),'PNG'): raise OSError('PNG 保存失败')
+            self.status.setText(('定时截图已保存：' if automatic else '视频截图已保存：')+str(path))
+        except OSError as error: self.status.setText('截图保存失败：'+safe_error(error))
+    def restore_youtube_controls(self):
+        script='''(()=>{for(const [e,v] of (window.__devotionCaptureHidden||[]))e.style.visibility=v;window.__devotionCaptureHidden=[];})()'''
+        self.browser.page().runJavaScript(script)
+    def open_screenshot_settings(self):
+        dialog=QDialog(self); dialog.setWindowTitle('截图设置'); dialog.resize(540,220); form=QVBoxLayout(dialog)
+        enabled=QCheckBox('播放期间定时自动截取视频画面'); enabled.setChecked(bool(self.cfg.get('screenshot_interval',0))); form.addWidget(enabled)
+        seconds=QComboBox(); seconds.addItems(['5','10','15','30','60']); seconds.setCurrentText(str(self.cfg.get('screenshot_interval') or 5)); form.addWidget(QLabel('截取间隔（秒）')); form.addWidget(seconds)
+        row=QHBoxLayout(); path=QLineEdit(self.cfg.get('screenshot_dir') or str(self.store.root/'screenshots')); choose=QPushButton('选择目录…')
+        choose.clicked.connect(lambda:self.choose_screenshot_directory(path)); row.addWidget(QLabel('保存目录')); row.addWidget(path,1); row.addWidget(choose); form.addLayout(row)
+        hint=QLabel('手动截图按钮会直接保存当前 YouTube 视频区域，不包含网页周围内容或播放器控件。定时截图仅在播放时保存。'); hint.setWordWrap(True); form.addWidget(hint)
+        buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); buttons.accepted.connect(lambda:self.save_screenshot_settings(dialog,enabled,seconds,path)); buttons.rejected.connect(dialog.reject); form.addWidget(buttons); dialog.exec()
+    def choose_screenshot_directory(self,line):
+        selected=QFileDialog.getExistingDirectory(self,'选择截图保存目录',line.text())
+        if selected: line.setText(selected)
+    def save_screenshot_settings(self,dialog,enabled,seconds,path):
+        directory=path.text().strip()
+        if not directory: QMessageBox.warning(dialog,'截图设置','请选择截图保存目录。'); return
+        interval=int(seconds.currentText()) if enabled.isChecked() else 0
+        self.cfg.update(screenshot_dir=directory,screenshot_interval=interval); self.store.save_config(self.cfg)
+        if interval: self.screenshot_timer.start(interval*1000)
+        else: self.screenshot_timer.stop()
+        dialog.accept(); self.status.setText('截图设置已保存。'+(f'播放时每 {interval} 秒自动截图。' if interval else '自动截图已关闭；仍可手动截图。'))
     def open_downloads(self): self.download_dialog.present(self.browser.url().toString())
-    def build_pages(self,layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals):
+    def open_download_settings(self):
+        self.download_dialog.open_settings()
+    def authorize_google(self):
+        if self.oauth_worker and self.oauth_worker.isRunning(): return
+        path=self.settings_page.fields['credentials'].text().strip()
+        try:
+            from .oauth import oauth_client_id
+            oauth_client_id(path)
+        except (OSError,ValueError) as e:
+            QMessageBox.warning(self,'Google 登录设置',str(e)); return
+        self.status.setText('正在打开默认浏览器，请登录并批准 DevotionFlow 访问 Google Sheets。')
+        self.cfg.update(credentials=path,oauth_client_file=path); self.store.save_config(self.cfg)
+        self.oauth_worker=OAuthWorker(path); self.oauth_worker.result.connect(self.google_authorized); retain_background_worker(self.oauth_worker); self.oauth_worker.start()
+    def check_for_updates(self,manual=False):
+        if self.update_worker and self.update_worker.isRunning(): return
+        if not manual and self.cfg.get('last_update_check')==date.today().isoformat(): return
+        if not manual:
+            self.cfg['last_update_check']=date.today().isoformat(); self.store.save_config(self.cfg)
+        self._manual_update_check=manual
+        self.update_worker=UpdateWorker(); self.update_worker.result.connect(self.update_checked); retain_background_worker(self.update_worker); self.update_worker.start()
+    def update_checked(self,result):
+        ok,value=result; manual=self._manual_update_check
+        if not ok:
+            if manual: QMessageBox.warning(self,'检查更新','暂时无法检查更新：'+str(value))
+            return
+        if not value:
+            if manual:
+                from .updates import VERSION
+                QMessageBox.information(self,'检查更新',f'当前已是最新版本（{VERSION}）。')
+            return
+        from .updates import VERSION
+        answer=QMessageBox.question(self,'发现新版本',f'当前版本：{VERSION}\n发现版本：{value["version"]}\n\n打开 DevotionFlow 官方发布页下载对应系统安装包吗？',QMessageBox.Yes|QMessageBox.No,QMessageBox.Yes)
+        if answer==QMessageBox.Yes: QDesktopServices.openUrl(QUrl(value['url']))
+    def google_authorized(self,result):
+        ok,value=result
+        if not ok:
+            self.status.setText('Google 授权失败：'+str(value)); return
+        _,email=value; self.cfg.update(mode='google',credentials=self.settings_page.fields['credentials'].text().strip(),oauth_client_file=self.settings_page.fields['credentials'].text().strip(),oauth_connected=True,oauth_email=email)
+        self.settings_page.fields['mode'].setCurrentText('google'); self.store.save_config(self.cfg); self.refresh()
+        self.status.setText('已连接 Google 账号：'+email+'。该账号须有目标表格访问权限。'); self.sync()
+    def build_pages(self,layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals,brand):
         self.fullscreen_active=False
         # A persistent browser stays alive while other pages are selected.
         layout.removeItem(bar); bar.setParent(None)
         self.topbar=QWidget(); self.topbar.setLayout(bar); layout.insertWidget(0,self.topbar)
         self.avatar=QPushButton(); self.avatar.setFixedSize(48,42); self.avatar.clicked.connect(lambda:self.select_page(1)); bar.addWidget(self.avatar)
+        self.brand_icon=brand
         self.sidebar_toggle=QPushButton('☰'); self.sidebar_toggle.setToolTip('收起 / 展开导航栏'); self.sidebar_toggle.clicked.connect(self.toggle_sidebar); bar.insertWidget(0,self.sidebar_toggle)
         layout.removeWidget(split)
         body=QHBoxLayout(); layout.addLayout(body,1)
@@ -347,7 +499,7 @@ class Window(QMainWindow):
         ll.removeItem(nav); nav.setParent(None)
         self.player_nav=QWidget(); self.player_nav.setLayout(nav); ll.insertWidget(0,self.player_nav)
         full=QPushButton('全屏  F11'); full.clicked.connect(self.toggle_fullscreen); nav.addWidget(full)
-        for name,callback in [('截图',self.screenshot),('下载',self.open_downloads)]:
+        for name,callback in [('截图',self.screenshot),('下载设置',self.open_download_settings),('下载当前视频',self.open_downloads)]:
             button=QPushButton(name); button.clicked.connect(callback); nav.addWidget(button)
         exitbutton=QPushButton('退出全屏  Esc',self.browser); exitbutton.clicked.connect(self.exit_fullscreen); exitbutton.move(18,18); exitbutton.hide(); self.exitbutton=exitbutton
         self.browser.settings().setAttribute(QWebEngineSettings.FullScreenSupportEnabled,True)
@@ -381,7 +533,10 @@ class Window(QMainWindow):
         for key,widget in self.settings_page.fields.items():
             value=self.cfg[key]
             if isinstance(widget,QSpinBox): widget.setValue(value)
-            elif isinstance(widget,QComboBox): widget.setCurrentText(value)
+            elif isinstance(widget,QCheckBox): widget.setChecked(bool(value))
+            elif isinstance(widget,QComboBox):
+                if key=='theme': widget.setCurrentIndex(max(0,widget.findData({'light':'sage'}.get(value,value))))
+                else: widget.setCurrentText(value)
             else: widget.setText(str(value))
     def toggle_fullscreen(self):
         if self.fullscreen_active: self.exit_fullscreen()
@@ -420,21 +575,25 @@ class Window(QMainWindow):
         for widget in (self.category_chart,self.trend_chart): widget.rows=rows; widget.month=month; widget.update()
         self.summary.setText('统计包含本地已保存、尚待同步的登记。无登记日期不计算达标率。')
     def apply_theme(self):
-        dark=self.cfg['theme']=='dark'; bg='#111a28' if dark else '#f2f5f9'; fg='#e6edf6' if dark else '#203047'; panel='#1c293b' if dark else '#ffffff'
-        self.setStyleSheet(f'QWidget {{background:{bg};color:{fg};font-family:"Microsoft YaHei UI";font-size:13px;}} QLineEdit,QTextEdit,QComboBox,QSpinBox,QTableWidget {{background:{panel};padding:7px;border:1px solid #526078;border-radius:5px;}} QPushButton {{background:{panel};padding:9px;border:1px solid #526078;border-radius:6px;}} QPushButton:hover {{border-color:#4cc7a2;}} QProgressBar {{border:1px solid #526078;text-align:center;height:20px;}} QProgressBar::chunk {{background:#299d80;}}')
-        self.setStyleSheet(self.styleSheet() + " QTabBar::tab {background:#25354b;color:#e6edf6;padding:10px;} QTabBar::tab:selected {border-bottom:2px solid #4cc7a2;} QTabWidget::pane {border:1px solid #526078;}")
-        bg='#141518' if dark else '#f2f3f5'; panel='#202226' if dark else '#ffffff'; fg='#eeeeef' if dark else '#252830'; border='#34373d' if dark else '#d9dde2'
+        theme=self.cfg.get('theme','sage')
+        if theme=='light': theme='sage'
+        dark=theme=='dark'
+        palettes={
+            'sage':dict(bg='#f1f5f1',panel='#ffffff',fg='#24352d',border='#d5e0d8',accent='#397c5c',selected='#dcece1',muted='#71877a'),
+            'rose':dict(bg='#fbf1f1',panel='#ffffff',fg='#432e32',border='#ead4d7',accent='#bd5967',selected='#f5dfe2',muted='#94757a'),
+            'dark':dict(bg='#141518',panel='#202226',fg='#eeeeef',border='#34373d',accent='#65b885',selected='#315c48',muted='#98a0aa')}
+        p=palettes.get(theme,palettes['sage']); bg,panel,fg,border,accent,selected,muted=(p[k] for k in ('bg','panel','fg','border','accent','selected','muted'))
         self.setStyleSheet(f'''QWidget {{background:{bg};color:{fg};font-family:"Microsoft YaHei UI";font-size:12px;}}
         QFrame#card {{background:{panel};border:1px solid {border};border-radius:12px;}}
         QFrame#card QLabel {{background:transparent;}}
         QLabel#heading {{font-size:24px;font-weight:700;}} QLabel#welcome {{font-size:15px;padding:4px 0 8px;}}
-        QLabel#eyebrow {{font-size:11px;color:#98a0aa;}} QLabel#statline {{font-size:18px;font-weight:600;}}
+        QLabel#eyebrow {{font-size:11px;color:{muted};}} QLabel#statline {{font-size:18px;font-weight:600;}}
         QLineEdit,QTextEdit,QComboBox,QSpinBox,QTableWidget {{background:{panel};border:1px solid {border};border-radius:6px;padding:7px;}}
         QPushButton {{background:{panel};border:1px solid {border};border-radius:7px;padding:8px 12px;}}
-        QPushButton:hover {{border-color:#66be91;}} QPushButton#primary {{background:#397c5c;color:white;border:0;font-weight:600;}}
-        QPushButton:checked {{background:#315c48;color:white;border-color:#65b885;}} QToolTip {{background:{panel};color:{fg};border:1px solid {border};padding:12px;}}
+        QPushButton:hover {{border-color:{accent};}} QPushButton#primary {{background:{accent};color:white;border:0;font-weight:600;}}
+        QPushButton:checked {{background:{selected};color:{fg};border-color:{accent};}} QToolTip {{background:{panel};color:{fg};border:1px solid {border};padding:12px;}}
         QProgressBar {{border:0;background:{border};border-radius:4px;text-align:center;min-height:8px;}}
-        QProgressBar::chunk {{background:#65b885;border-radius:4px;}}
+        QProgressBar::chunk {{background:{accent};border-radius:4px;}}
         QCalendarWidget QToolButton {{color:{fg};background:{panel};border:0;padding:4px;}}
         QCalendarWidget QWidget#qt_calendar_navigationbar {{background:{panel};}}
         QCalendarWidget QAbstractItemView {{background:{panel};selection-background-color:transparent;}}
@@ -445,10 +604,11 @@ class Window(QMainWindow):
         self.save_draft()
         self.tracker=Tracker(); self.submit.setEnabled(False); self.browser.setUrl(QUrl('https://www.youtube.com/?hl=zh-CN'))
     def toggle_theme(self):
-        self.cfg['theme']='light' if self.cfg['theme']=='dark' else 'dark'; self.store.save_config(self.cfg); self.apply_theme()
-        self.settings_page.fields['theme'].setCurrentText(self.cfg['theme'])
+        order=['sage','rose','dark']; self.cfg['theme']=order[(order.index(self.cfg['theme'])+1)%len(order)] if self.cfg['theme'] in order else 'sage'; self.store.save_config(self.cfg); self.apply_theme()
+        self.settings_page.fields['theme'].setCurrentIndex(max(0,self.settings_page.fields['theme'].findData(self.cfg['theme'])))
     def loaded(self,ok):
         if self.browser.url().scheme() not in ('http','https'):
+            if self.tracker.video=='local-demo': self.browser.page().allow_local_demo=False
             self.browser_status.setText('本地演示 · 点击顶部“打开 YouTube”进入真实网页'); return
         self.browser_status.setText('YouTube 已加载 · 在页面中搜索或打开视频' if ok else '网页加载失败，请检查网络后点击 ↻ 重试')
     def navigate(self):
@@ -477,6 +637,8 @@ class Window(QMainWindow):
                 return
             self.tracker.sample(data)
             if data: self.show_tracking()
+            if data and self.cfg.get('watch_download'):
+                self.download_dialog.queue_current('https://www.youtube.com/watch?v='+data['id'])
             elif self.tracker.video!='local-demo': self.submit.setEnabled(False); self.update_avatar_status()
         except (ValueError,TypeError,KeyError): self.submit.setEnabled(False)
     def show_tracking(self):
@@ -562,5 +724,5 @@ class Window(QMainWindow):
             self.download_dialog.process.waitForFinished(1500)
         if self.worker and self.worker.isRunning(): self.status.setText('正在完成同步，请稍后关闭。'); event.ignore(); return
         self.save_draft(); self.autosave.stop(); self.draft_timer.stop()
-        self.timer.stop(); self.retry.stop(); self.browser.setPage(QWebEnginePage(self.browser)); self.store.db.close(); event.accept()
+        self.timer.stop(); self.retry.stop(); self.screenshot_timer.stop(); self.browser.setPage(QWebEnginePage(self.browser)); self.store.db.close(); event.accept()
 

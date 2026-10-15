@@ -9,9 +9,10 @@ from .security import private_directory,valid_video_id
 DEFAULTS = dict(operator='', mode='local', credentials='', log_id='', log_sheet='日志',
                 summary_id='', summary_sheet='10月', date_row=1, category_row=2,
                 name_col=1, first_person_row=5, reflection_header='认识', daily_goal=2,
-                monthly_goal=50, theme='dark', avatar='🌱', avatar_path='', sidebar_collapsed=False, mood='平静', categories=[],
-                download_dir='', download_quality='1080', ffmpeg_path='',
-                log_header_row=1, category_sheet='分类', category_col=1)
+                monthly_goal=50, theme='sage', avatar='🌱', avatar_path='', sidebar_collapsed=False, mood='平静', categories=[],
+                download_dir='', download_quality='1080', ffmpeg_path='', watch_download=False, auto_install_ffmpeg=True,
+                screenshot_dir='', screenshot_interval=0,
+                log_header_row=1, category_sheet='分类', category_col=1, oauth_client_file='',oauth_connected=False,oauth_email='')
 HEADERS = ['登记时间','登记人','视频标题','视频链接','视频总时长','观看时长','分类','个人观后感','完播率','记录ID']
 
 class Store:
