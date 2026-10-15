@@ -1,4 +1,4 @@
-# Exact versions and PyPI wheel SHA-256 hashes; Python 3.12, Windows/macOS.
+# Exact versions and PyPI distribution SHA-256 hashes; Python 3.12, Windows/macOS.
 -r requirements.lock
 
 altgraph==0.17.5 \
