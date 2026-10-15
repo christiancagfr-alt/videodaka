@@ -57,7 +57,7 @@ else:
     subprocess.run(['ditto',str(root/'dist/DevotionFlow.app'),str(staging/'DevotionFlow.app')],check=True)
     link=staging/'Applications'
     if not link.exists(): link.symlink_to('/Applications')
-    target=release/f'DevotionFlow-0.2.0-macos-{platform.machine()}.dmg'
+    target=release/f'DevotionFlow-0.2.1-macos-{platform.machine()}.dmg'
     subprocess.run(['hdiutil','create','-ov','-volname','DevotionFlow','-srcfolder',str(staging),
                     '-format','UDZO',str(target)],check=True)
 checksums=[]

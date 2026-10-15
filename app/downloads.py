@@ -8,6 +8,25 @@ from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import QDialog,QVBoxLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QTextEdit,QFileDialog,QComboBox,QCheckBox,QDialogButtonBox,QMessageBox
 from .security import safe_error
 
+def find_ffmpeg(configured='',which=None):
+    """Return a usable FFmpeg file path from settings, PATH or common install links."""
+    lookup=which or shutil.which
+    candidates=[]
+    if configured: candidates.append(Path(configured).expanduser())
+    for name in ('ffmpeg.exe','ffmpeg'):
+        found=lookup(name)
+        if found: candidates.append(Path(found).expanduser())
+    if sys.platform=='win32':
+        links=Path(os.environ.get('LOCALAPPDATA',''))/'Microsoft'/'WinGet'/'Links'
+        candidates.extend((links/'ffmpeg.exe',links/'ffmpeg'))
+    elif sys.platform=='darwin':
+        candidates.extend((Path('/opt/homebrew/bin/ffmpeg'),Path('/usr/local/bin/ffmpeg')))
+    for candidate in candidates:
+        try:
+            if candidate.is_file(): return str(candidate.resolve())
+        except (OSError,RuntimeError): pass
+    return ''
+
 def playlist_url(url):
     parsed=urlparse(url)
     if parsed.hostname not in ('www.youtube.com','youtube.com','m.youtube.com'): return ''
@@ -49,11 +68,11 @@ class DownloadDialog(QDialog):
         self.process.errorOccurred.connect(self.failed)
         self.install_process=QProcess(self); self.install_process.setProcessChannelMode(QProcess.MergedChannels)
         self.install_process.readyReadStandardOutput.connect(lambda:self.output.append(safe_error(bytes(self.install_process.readAllStandardOutput()).decode('utf-8',errors='replace'))))
-        self.install_process.finished.connect(self.ffmpeg_installed); self.install_process.errorOccurred.connect(lambda _error:self.output.append('FFmpeg 安装进程启动失败：'+self.install_process.errorString())); self.queue=[]; self.seen=set(); self.settings_dialog=None
+        self.install_process.finished.connect(self.ffmpeg_installed); self.install_process.errorOccurred.connect(lambda _error:self.output.append('FFmpeg 安装进程启动失败：'+self.install_process.errorString())); self.queue=[]; self.seen=set(); self.settings_dialog=None; self.ffmpeg_field=None; self.ffmpeg_status=None; self.ffmpeg_install_button=None
     def open_settings(self):
         if self.settings_dialog:
             self.settings_dialog.show(); self.settings_dialog.raise_(); return
-        dialog=QDialog(self.owner); dialog.setWindowTitle('下载与播放设置'); dialog.resize(560,340); form=QVBoxLayout(dialog)
+        dialog=QDialog(self.owner); dialog.setWindowTitle('下载与播放设置'); dialog.resize(600,430); form=QVBoxLayout(dialog)
         self.auto_box=QCheckBox('边看边下载：播放视频时自动排队下载'); self.auto_box.setChecked(bool(self.owner.cfg.get('watch_download'))); form.addWidget(self.auto_box)
         form.addWidget(QLabel('手动下载始终可在播放页点击“下载当前视频”；自动模式仅在浏览器播放真实 YouTube 视频时运行。'))
         self.auto_install_box=QCheckBox('缺少 FFmpeg 时使用系统包管理器自动安装'); self.auto_install_box.setChecked(bool(self.owner.cfg.get('auto_install_ffmpeg',True))); form.addWidget(self.auto_install_box)
@@ -62,9 +81,23 @@ class DownloadDialog(QDialog):
         pick.clicked.connect(lambda:self._pick_directory(directory)); path_row.addWidget(QLabel('下载目录')); path_row.addWidget(directory,1); path_row.addWidget(pick); form.addLayout(path_row)
         ffmpeg_row=QHBoxLayout(); ffmpeg=QLineEdit(self.owner.cfg.get('ffmpeg_path','')); ffmpeg.setPlaceholderText('留空自动检测 PATH 或自动安装'); ffmpeg_pick=QPushButton('选择 FFmpeg…')
         ffmpeg_pick.clicked.connect(lambda:self._pick_ffmpeg(ffmpeg)); ffmpeg_row.addWidget(QLabel('手动指定')); ffmpeg_row.addWidget(ffmpeg,1); ffmpeg_row.addWidget(ffmpeg_pick); form.addLayout(ffmpeg_row)
+        ffmpeg_actions=QHBoxLayout(); detect=QPushButton('检测并保存路径'); install=QPushButton('安装 FFmpeg'); self.ffmpeg_status=QLabel(); self.ffmpeg_status.setWordWrap(True)
+        detect.clicked.connect(lambda:self.detect_ffmpeg(ffmpeg,self.ffmpeg_status)); install.clicked.connect(lambda:self.install_ffmpeg('',resume_download=False))
+        ffmpeg_actions.addWidget(detect); ffmpeg_actions.addWidget(install); form.addLayout(ffmpeg_actions); form.addWidget(self.ffmpeg_status)
+        self.ffmpeg_field=ffmpeg; self.ffmpeg_install_button=install
+        self.detect_ffmpeg(ffmpeg,self.ffmpeg_status)
         save=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); save.accepted.connect(lambda:self._save_settings(dialog,directory,quality,ffmpeg)); save.rejected.connect(dialog.reject); form.addWidget(save)
         self.settings_dialog=dialog; dialog.finished.connect(lambda:self._clear_settings()); dialog.show()
-    def _clear_settings(self): self.settings_dialog=None
+    def _clear_settings(self): self.settings_dialog=None; self.ffmpeg_field=None; self.ffmpeg_status=None; self.ffmpeg_install_button=None
+    def detect_ffmpeg(self,line,status):
+        found=find_ffmpeg(line.text().strip())
+        if found:
+            line.setText(found); self.owner.cfg['ffmpeg_path']=found; self.owner.store.save_config(self.owner.cfg)
+            status.setText('已检测到 FFmpeg，路径已保存：'+found)
+            return found
+        line.clear(); self.owner.cfg['ffmpeg_path']=''; self.owner.store.save_config(self.owner.cfg)
+        status.setText('未检测到 FFmpeg。点击“安装 FFmpeg”，可通过 winget（Windows）或 Homebrew（macOS）安装。')
+        return ''
     def _pick_directory(self,line):
         path=QFileDialog.getExistingDirectory(self.owner,'选择下载目录',line.text())
         if path: line.setText(path)
@@ -76,7 +109,11 @@ class DownloadDialog(QDialog):
         target=directory.text().strip()
         if not target:
             QMessageBox.warning(dialog,'下载设置','请指定视频保存目录。'); return
-        self.owner.cfg.update(download_dir=target,download_quality=quality.currentText(),ffmpeg_path=ffmpeg.text().strip(),watch_download=self.auto_box.isChecked(),auto_install_ffmpeg=self.auto_install_box.isChecked())
+        ffmpeg_path=ffmpeg.text().strip()
+        if ffmpeg_path and not Path(ffmpeg_path).expanduser().is_file():
+            QMessageBox.warning(dialog,'FFmpeg 路径无效','指定的 FFmpeg 文件不存在。请重新选择文件，或清空路径使用自动检测。'); return
+        if not ffmpeg_path: ffmpeg_path=find_ffmpeg()
+        self.owner.cfg.update(download_dir=target,download_quality=quality.currentText(),ffmpeg_path=ffmpeg_path,watch_download=self.auto_box.isChecked(),auto_install_ffmpeg=self.auto_install_box.isChecked())
         self.owner.store.save_config(self.owner.cfg); self.path.setText(target); self.quality.setCurrentText(quality.currentText()); dialog.accept()
         self.output.append('下载设置已保存。'+('边看边下载已开启。' if self.owner.cfg['watch_download'] else '边看边下载已关闭，仍可手动下载。'))
     def queue_current(self,url):
@@ -101,12 +138,12 @@ class DownloadDialog(QDialog):
         if playlist:
             target=playlist_url(target)
             if not target: self.output.append('当前链接没有播放列表，请在 YouTube 中打开播放列表后重试。'); return
-        configured=self.owner.cfg.get('ffmpeg_path','')
-        ffmpeg=str(Path(configured).expanduser()) if configured and Path(configured).expanduser().is_file() else ''
-        if not ffmpeg: ffmpeg=shutil.which('ffmpeg') or shutil.which('ffmpeg.exe') or ''
+        ffmpeg=find_ffmpeg(self.owner.cfg.get('ffmpeg_path',''))
         if not ffmpeg:
             if self.owner.cfg.get('auto_install_ffmpeg',True): self.install_ffmpeg(target); return
             self.output.append('高清视频合并需要 FFmpeg。请在下载设置中启用自动安装或手动选择 ffmpeg。'); return
+        if ffmpeg!=self.owner.cfg.get('ffmpeg_path'):
+            self.owner.cfg['ffmpeg_path']=ffmpeg; self.owner.store.save_config(self.owner.cfg)
         try:
             if not self.path.text().strip(): raise ValueError('请选择下载目录')
             directory=Path(self.path.text()).expanduser().resolve(); directory.mkdir(parents=True,exist_ok=True)
@@ -123,7 +160,7 @@ class DownloadDialog(QDialog):
         self.output.append('下载完成。' if code==0 else '下载已停止或失败，查看上方错误。再次下载可续传。')
         if self.queue and self.process.state()==QProcess.NotRunning:
             next_url=self.queue.pop(0); self.url.setText(next_url); self.start(False)
-    def install_ffmpeg(self,target):
+    def install_ffmpeg(self,target='',resume_download=True):
         if self.install_process.state()!=QProcess.NotRunning: return
         if sys.platform=='win32':
             import shutil
@@ -134,11 +171,16 @@ class DownloadDialog(QDialog):
             args=['install','ffmpeg']
         else: executable=None; args=[]
         if not executable:
+            if self.ffmpeg_status: self.ffmpeg_status.setText('未找到可用的安装工具。Windows 需要 winget，macOS 需要 Homebrew；也可手动选择 FFmpeg。')
             self.output.append('未检测到可用的系统包管理器。请安装 FFmpeg（ffmpeg.org 下载页列出 Windows/macOS 构建来源），或在下载设置里手动指定。'); return
-        self._install_target=target; self.output.append('正在通过系统包管理器安装 FFmpeg…')
+        self._install_target=target if resume_download else ''; self.output.append('正在通过系统包管理器安装 FFmpeg…')
+        if self.ffmpeg_install_button: self.ffmpeg_install_button.setEnabled(False)
+        if self.ffmpeg_status: self.ffmpeg_status.setText('FFmpeg 正在安装，请稍候…')
         self.install_process.start(executable,args)
     def ffmpeg_installed(self,code,status):
+        if self.ffmpeg_install_button: self.ffmpeg_install_button.setEnabled(True)
         if code:
+            if self.ffmpeg_status: self.ffmpeg_status.setText('FFmpeg 安装未完成，请检查系统包管理器后重试。')
             self.output.append('FFmpeg 安装未完成。可以重试，或在下载设置中手动选择 ffmpeg。'); return
         if sys.platform=='darwin':
             for directory in ('/opt/homebrew/bin','/usr/local/bin'):
@@ -147,12 +189,17 @@ class DownloadDialog(QDialog):
             links=Path(os.environ.get('LOCALAPPDATA',''))/'Microsoft'/'WinGet'/'Links'
             if links.is_dir() and str(links) not in os.environ.get('PATH',''):
                 os.environ['PATH']=str(links)+os.pathsep+os.environ.get('PATH','')
-        ffmpeg=shutil.which('ffmpeg') or shutil.which('ffmpeg.exe')
+        ffmpeg=find_ffmpeg()
         if ffmpeg:
             self.owner.cfg['ffmpeg_path']=ffmpeg; self.owner.store.save_config(self.owner.cfg)
+            if self.ffmpeg_field: self.ffmpeg_field.setText(ffmpeg)
+            if self.ffmpeg_status: self.ffmpeg_status.setText('已安装并检测到 FFmpeg，路径已保存：'+ffmpeg)
             self.output.append('FFmpeg 已安装并检测到：'+ffmpeg)
-            self.url.setText(self._install_target); self.start(False)
-        else: self.output.append('安装程序已结束。若 FFmpeg 不在当前 PATH，请重启应用后重试。')
+            if self._install_target:
+                self.url.setText(self._install_target); self.start(False)
+        else:
+            if self.ffmpeg_status: self.ffmpeg_status.setText('安装程序已结束，但仍未在 PATH 检测到 FFmpeg。可重启应用后再次检测，或手动选择 ffmpeg。')
+            self.output.append('安装程序已结束。若 FFmpeg 不在当前 PATH，请重启应用后重试。')
     def stop(self):
         if self.process.state()!=QProcess.NotRunning: self.process.kill()
         self.queue.clear()

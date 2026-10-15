@@ -28,7 +28,7 @@ class GoogleSheets:
         import gspread
         from .oauth import load_credentials,oauth_client_id
         credentials=load_credentials(oauth_client_id(cfg['oauth_client_file']))
-        if credentials is None: raise ValueError('请先在设置中连接 Google 账号')
+        if credentials is None: raise ValueError('当前 OAuth 客户端没有可读取的 Google 登录令牌。请在设置中重新连接账号，并等应用提示令牌验证完成。')
         self.client=gspread.authorize(credentials)
         self.client.set_timeout(25)
     def sheet(self,key,title): return self.client.open_by_key(key).worksheet(title)

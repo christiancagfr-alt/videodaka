@@ -13,6 +13,7 @@ from PySide6.QtWebEngineCore import QWebEngineProfile,QWebEnginePage,QWebEngineS
 from .core import Store,Tracker,DEFAULTS
 from .sync import sync_pending,GoogleSheets
 from .downloads import DownloadDialog
+from .capture import CAPTURE_VIDEO_RECT_SCRIPT,seek_video_script
 from .security import safe_error,is_youtube_url,validate_sample,valid_video_id
 
 _BACKGROUND_WORKERS=set()
@@ -76,7 +77,8 @@ class OAuthWorker(QThread):
     def run(self):
         try:
             from .oauth import login
-            self.result.emit((True,login(self.path)))
+            client_id,email=login(self.path)
+            self.result.emit((True,(self.path,client_id,email)))
         except Exception as e: self.result.emit((False,safe_error(e)))
 
 class UpdateWorker(QThread):
@@ -90,7 +92,11 @@ class UpdateWorker(QThread):
 class Settings(QDialog):
     def __init__(self,cfg,parent,embedded=False):
         super().__init__(parent); self.owner=parent; self.setWindowTitle('设置与表格映射'); self.resize(600,720); self.fields={}
-        layout=QVBoxLayout(self); scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); form=QFormLayout(body); scroll.setWidget(body); layout.addWidget(scroll)
+        layout=QVBoxLayout(self)
+        if embedded:
+            back=QPushButton('← 返回播放与登记'); back.setObjectName('secondary'); back.clicked.connect(lambda:parent.select_page(0)); layout.addWidget(back); self.back_to_player=back
+        else: self.back_to_player=None
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); form=QFormLayout(body); scroll.setWidget(body); layout.addWidget(scroll)
         labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
         for k,label in labels.items():
             if k=='avatar': k='avatar_path'; label='头像图片'
@@ -121,6 +127,9 @@ class Settings(QDialog):
                     authorize=QPushButton('连接 Google 账号'); authorize.clicked.connect(self.owner.authorize_google); line.addWidget(authorize)
                 if k=='avatar_path': widget.setPlaceholderText('上传 PNG / JPG / WebP 图片')
                 form.addRow(label if k=='avatar_path' else '桌面应用 OAuth 配置',row)
+                if k=='credentials':
+                    self.google_status=QLabel(('已连接 Google 账号：'+cfg.get('oauth_email','')) if cfg.get('oauth_connected') else '尚未连接 Google 账号')
+                    self.google_status.setWordWrap(True); form.addRow('账号状态',self.google_status)
             elif k in ('download_dir','ffmpeg_path'):
                 row=QWidget(); line=QHBoxLayout(row); line.setContentsMargins(0,0,0,0); line.addWidget(widget,1)
                 choose=QPushButton('选择…'); choose.clicked.connect(lambda checked=False,key=k:self.choose_download_path(key)); line.addWidget(choose); form.addRow(label,row)
@@ -292,7 +301,7 @@ class Window(QMainWindow):
         self.title=QLabel('打开视频，开始今天的学习'); self.title.setWordWrap(True); self.title.setStyleSheet('font-size:21px;font-weight:600'); form.addWidget(self.title)
         self.metrics=QLabel('等待视频'); form.addWidget(self.metrics); self.progress=QProgressBar(); form.addWidget(self.progress)
         self.category=QComboBox(); self.category.setEditable(True); form.addWidget(QLabel('视频分类')); form.addWidget(self.category)
-        refresh=QPushButton('读取在线历史分类'); refresh.clicked.connect(self.categories); form.addWidget(refresh)
+        refresh=QPushButton('读取在线历史分类'); refresh.clicked.connect(self.categories); form.addWidget(refresh); self.category_refresh_button=refresh
         self.reflection=QTextEdit(); self.reflection.setPlaceholderText('今天有哪些触动？记录你的认识与感想（选填）'); form.addWidget(self.reflection)
         self.submit=QPushButton('确认登记并同步表格'); self.submit.setMinimumHeight(46); self.submit.clicked.connect(self.register); form.addWidget(self.submit)
         reset=QPushButton('开始新一轮观看'); reset.clicked.connect(self.new_round); form.addWidget(reset)
@@ -379,15 +388,19 @@ class Window(QMainWindow):
             if not automatic: self.status.setText('请先在 YouTube 打开一个视频，再进行截图。')
             return
         self._screenshot_pending=True
-        script='''(()=>{const v=document.querySelector("video");if(!v||!v.videoWidth||!v.videoHeight)return null;const player=v.closest(".html5-video-player");const selectors=".ytp-chrome-top,.ytp-chrome-bottom,.ytp-gradient-top,.ytp-gradient-bottom,.ytp-title,.ytp-title-channel,.ytp-pause-overlay,.ytp-cued-thumbnail-overlay,.ytp-ce-element,.ytp-ce-covering-overlay,.ytp-endscreen-content,.ytp-bezel-text,.ytp-caption-window-container,.ytp-watermark,.ytp-iv-player-content";window.__devotionCaptureHidden=[];if(player)for(const e of player.querySelectorAll(selectors)){window.__devotionCaptureHidden.push([e,e.style.visibility]);e.style.visibility="hidden";}const r=v.getBoundingClientRect(),x=Math.max(0,r.left),y=Math.max(0,r.top),right=Math.min(innerWidth,r.right),bottom=Math.min(innerHeight,r.bottom);if(right<=x||bottom<=y)return null;return {x,y,w:right-x,h:bottom-y,playing:!v.paused&&!v.ended};})()'''
-        self.browser.page().runJavaScript(script,lambda rect:self.save_video_frame(rect,automatic))
+        self.browser.page().runJavaScript(CAPTURE_VIDEO_RECT_SCRIPT,lambda rect:self.save_video_frame(rect,automatic))
     def save_video_frame(self,rect,automatic):
+        if isinstance(rect,str):
+            try: rect=json.loads(rect)
+            except (TypeError,json.JSONDecodeError): rect=None
         if not isinstance(rect,dict) or not all(isinstance(rect.get(k),(int,float)) for k in ('x','y','w','h')):
-            self.restore_youtube_controls(); self._screenshot_pending=False
-            if not automatic: self.status.setText('当前页面没有可见的视频画面。')
+            self._screenshot_pending=False
+            if not automatic:
+                detail=rect.get('message','') if isinstance(rect,dict) else ''
+                self.status.setText('没有找到可截取的视频画面。请确认视频已开始播放后重试；若播放器刚打开，可等待几秒。'+(('（'+detail+'）') if detail else ''))
             return
         if automatic and not rect.get('playing'):
-            self.restore_youtube_controls(); self._screenshot_pending=False; return
+            self._screenshot_pending=False; return
         QTimer.singleShot(120,lambda:self._save_video_frame_now(rect,automatic))
     def _save_video_frame_now(self,rect,automatic):
         self._screenshot_pending=False
@@ -397,11 +410,9 @@ class Window(QMainWindow):
         x=max(0,round(rect['x']*scale)); y=max(0,round(rect['y']*scale))
         w=min(pixmap.width()-x,round(rect['w']*scale)); h=min(pixmap.height()-y,round(rect['h']*scale))
         if w<=0 or h<=0:
-            self.restore_youtube_controls()
             if not automatic: self.status.setText('视频区域当前不可见，无法截图。')
             return
         image=pixmap.copy(x,y,w,h)
-        self.restore_youtube_controls()
         from datetime import datetime
         directory=Path(self.cfg.get('screenshot_dir') or (self.store.root/'screenshots')).expanduser()
         try:
@@ -412,9 +423,6 @@ class Window(QMainWindow):
             if not image.save(str(path),'PNG'): raise OSError('PNG 保存失败')
             self.status.setText(('定时截图已保存：' if automatic else '视频截图已保存：')+str(path))
         except OSError as error: self.status.setText('截图保存失败：'+safe_error(error))
-    def restore_youtube_controls(self):
-        script='''(()=>{for(const [e,v] of (window.__devotionCaptureHidden||[]))e.style.visibility=v;window.__devotionCaptureHidden=[];})()'''
-        self.browser.page().runJavaScript(script)
     def open_screenshot_settings(self):
         dialog=QDialog(self); dialog.setWindowTitle('截图设置'); dialog.resize(540,220); form=QVBoxLayout(dialog)
         enabled=QCheckBox('播放期间定时自动截取视频画面'); enabled.setChecked(bool(self.cfg.get('screenshot_interval',0))); form.addWidget(enabled)
@@ -446,7 +454,9 @@ class Window(QMainWindow):
         except (OSError,ValueError) as e:
             QMessageBox.warning(self,'Google 登录设置',str(e)); return
         self.status.setText('正在打开默认浏览器，请登录并批准 DevotionFlow 访问 Google Sheets。')
+        self.settings_page.google_status.setText('浏览器授权完成后，正在保存并验证系统凭据库中的登录令牌…')
         self.cfg.update(credentials=path,oauth_client_file=path); self.store.save_config(self.cfg)
+        self.category_refresh_button.setEnabled(False)
         self.oauth_worker=OAuthWorker(path); self.oauth_worker.result.connect(self.google_authorized); retain_background_worker(self.oauth_worker); self.oauth_worker.start()
     def check_for_updates(self,manual=False):
         if self.update_worker and self.update_worker.isRunning(): return
@@ -470,10 +480,15 @@ class Window(QMainWindow):
         if answer==QMessageBox.Yes: QDesktopServices.openUrl(QUrl(value['url']))
     def google_authorized(self,result):
         ok,value=result
+        self.category_refresh_button.setEnabled(True)
         if not ok:
+            self.settings_page.google_status.setText('Google 账号未连接：'+str(value))
             self.status.setText('Google 授权失败：'+str(value)); return
-        _,email=value; self.cfg.update(mode='google',credentials=self.settings_page.fields['credentials'].text().strip(),oauth_client_file=self.settings_page.fields['credentials'].text().strip(),oauth_connected=True,oauth_email=email)
+        path,client_id,email=value
+        self.cfg.update(mode='google',credentials=path,oauth_client_file=path,oauth_connected=True,oauth_email=email)
+        self.settings_page.fields['credentials'].setText(path)
         self.settings_page.fields['mode'].setCurrentText('google'); self.store.save_config(self.cfg); self.refresh()
+        self.settings_page.google_status.setText('已连接 Google 账号：'+email+'（登录令牌已从系统凭据库读回验证）')
         self.status.setText('已连接 Google 账号：'+email+'。该账号须有目标表格访问权限。'); self.sync()
     def build_pages(self,layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals,brand):
         self.fullscreen_active=False
@@ -633,7 +648,7 @@ class Window(QMainWindow):
                 position=self.resume_position
                 if data['duration']>0:
                     self.resume_position=None
-                    self.browser.page().runJavaScript(f'(()=>{{const v=document.querySelector("video");if(v){{v.pause();v.currentTime={max(0,position)};}}}})()')
+                    self.browser.page().runJavaScript(seek_video_script(position))
                 return
             self.tracker.sample(data)
             if data: self.show_tracking()
@@ -676,6 +691,8 @@ class Window(QMainWindow):
         self.refresh()
     def categories(self):
         if self.cfg['mode']=='local': self.status.setText('本地模式使用本地历史分类，也可直接输入分类。'); return
+        if getattr(self,'oauth_worker',None) and self.oauth_worker.isRunning():
+            self.status.setText('Google 授权仍在收尾，请等应用提示“已连接 Google 账号”后再读取分类。'); return
         if self.worker and self.worker.isRunning(): return
         self.worker=Worker(self.store.root,self.cfg.copy()); self.worker.result.connect(self.got_categories); self.worker.start()
     def got_categories(self,result):

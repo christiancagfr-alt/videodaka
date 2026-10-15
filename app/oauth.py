@@ -62,4 +62,10 @@ def login(client_file):
         response.raise_for_status(); email=response.json().get('email','')
     oauth_client=flow.client_config['client_id']
     save_tokens(oauth_client,credentials)
+    # Confirm the OS credential store can immediately return the token for this client.
+    # The browser's success page is sent just before run_local_server returns, so it
+    # must not be treated as an app-level connection confirmation by itself.
+    stored=load_credentials(oauth_client)
+    if stored is None or not stored.valid:
+        raise RuntimeError('Google 已完成浏览器授权，但系统凭据库未能读取刚保存的登录令牌。请重新连接 Google 账号。')
     return oauth_client,email

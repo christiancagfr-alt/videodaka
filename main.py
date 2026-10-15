@@ -3,6 +3,7 @@ import sys
 import json
 from pathlib import Path
 from PySide6.QtCore import QLockFile,QTimer,QEventLoop
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication,QMessageBox
 from app.ui import Window
 
@@ -19,10 +20,16 @@ def main():
         yt_dlp.main(sys.argv[2:]); return 0
     from PySide6.QtCore import QStandardPaths
     QApplication.setOrganizationName('DevotionFlow'); QApplication.setApplicationName('DevotionFlow')
+    icon_path=Path(__file__).resolve().parent/'assets'/'devotionflow.png'
+    if sys.platform=='win32':
+        # A stable AppUserModelID makes Windows group the window under this app
+        # and use the packaged identity instead of a generic taskbar icon.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(ctypes.c_wchar_p('DevotionFlow.Desktop'))
     default_data=Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)) if getattr(sys,'frozen',False) else Path(__file__).parent/'data'
     parser=argparse.ArgumentParser(); parser.add_argument('--demo',action='store_true'); parser.add_argument('--smoke',action='store_true'); parser.add_argument('--smoke-live',action='store_true'); parser.add_argument('--data-dir',type=Path,default=default_data); args=parser.parse_args()
     args.data_dir.mkdir(parents=True,exist_ok=True)
-    app=QApplication(sys.argv); lock=QLockFile(str(args.data_dir/'app.lock')); lock.setStaleLockTime(0)
+    app=QApplication(sys.argv); app.setWindowIcon(QIcon(str(icon_path))); lock=QLockFile(str(args.data_dir/'app.lock')); lock.setStaleLockTime(0)
     if not lock.tryLock(0): QMessageBox.information(None,'静心','程序已在运行。'); return 1
     window=Window(args.data_dir,args.demo or args.smoke); window.show()
     if args.smoke or args.smoke_live:

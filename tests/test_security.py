@@ -7,13 +7,22 @@ from pathlib import Path
 from unittest.mock import patch
 from app.security import is_youtube_url, validate_sample, load_service_account, safe_error
 from app.core import Tracker
-from app.downloads import download_arguments
+from app.downloads import download_arguments,find_ffmpeg
 from app.sync import insert_latest_log_row
 from app.updates import version_tuple, latest_release
 from app.oauth import oauth_client_id, _store
+from app.oauth import login
 
 
 class SecurityTests(unittest.TestCase):
+    def test_ffmpeg_path_detection_prefers_saved_and_path_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            saved=Path(directory)/'custom-ffmpeg.exe'; saved.write_bytes(b'')
+            from_path=Path(directory)/'ffmpeg.exe'; from_path.write_bytes(b'')
+            self.assertEqual(find_ffmpeg(str(saved),which=lambda _name:''),str(saved.resolve()))
+            self.assertEqual(find_ffmpeg('',which=lambda name:str(from_path) if name=='ffmpeg.exe' else ''),str(from_path.resolve()))
+            self.assertEqual(find_ffmpeg('',which=lambda _name:''),'')
+
     def test_update_version_parsing(self):
         self.assertEqual(version_tuple('v1.2.3'),(1,2,3))
         self.assertEqual(version_tuple('1.2.3-rc.1'),(1,2,3))
@@ -39,6 +48,18 @@ class SecurityTests(unittest.TestCase):
             for data in ({'web':desktop['installed']},desktop|{'installed':desktop['installed']|{'token_uri':'https://evil.test/token'}}):
                 path.write_text(json.dumps(data),encoding='utf-8')
                 with self.assertRaises(ValueError): oauth_client_id(path)
+
+    def test_oauth_login_reports_success_only_after_token_store_readback(self):
+        from types import SimpleNamespace
+        credentials=SimpleNamespace(id_token={'email':'reader@example.test'},valid=True,to_json=lambda:'{}')
+        flow=SimpleNamespace(run_local_server=lambda **_kwargs:credentials,
+                             client_config={'client_id':'sample.apps.googleusercontent.com'})
+        with patch('google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file',return_value=flow), \
+             patch('app.oauth.save_tokens') as save, \
+             patch('app.oauth.load_credentials',return_value=credentials) as readback:
+            self.assertEqual(login('client.json'),('sample.apps.googleusercontent.com','reader@example.test'))
+        save.assert_called_once_with('sample.apps.googleusercontent.com',credentials)
+        readback.assert_called_once_with('sample.apps.googleusercontent.com')
 
     def test_oauth_secret_store_uses_native_platform_backend(self):
         backend=_store().get_keyring()

@@ -90,6 +90,9 @@ class Tracker:
                 raise ValueError('保存的观看区间无效')
         for key in ('video','title','duration','intervals','registered','round_id','position'):
             if key in value: setattr(self,key,value[key])
+        # JSON restores interval pairs as lists; normalize them so new tuple spans
+        # can be sorted and merged safely after playback resumes.
+        self.intervals=[(float(start),float(end)) for start,end in spans]
         self.last=None
     def can_auto_register(self,operator,category):
         return bool(not self.registered and self.video and self.video!='local-demo' and self.duration>0 and self.watched/self.duration>=.95 and operator.strip() and category.strip())

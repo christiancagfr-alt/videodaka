@@ -86,6 +86,9 @@ class Tests(unittest.TestCase):
             self.assertEqual(restored.watched,70); self.assertEqual(restored.position,90); self.assertIsNone(restored.last)
             restored.sample(dict(id='test',title='视频',duration=100,position=95,clock=5000,playing=True,rate=1))
             self.assertEqual(restored.watched,70)
+            # The first post-resume sample seeds the clock; subsequent playback must continue accruing coverage.
+            restored.sample(dict(id='test',title='视频',duration=100,position=96,clock=6000,playing=True,rate=1))
+            self.assertEqual(restored.watched,71)
             record=dict(session_id=restored.round_id,operator='测试者',title='视频',url='test',duration=100,watched=95,category='电影',reflection='感想')
             other.add(record,self.cfg); other.add(record,self.cfg)
             self.assertEqual(len(other.records()),1); self.assertTrue(other.has_record(restored.round_id))
