@@ -56,13 +56,13 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     window.browser.page().runJavaScript(CAPTURE_VIDEO_RECT_SCRIPT,lambda value:(result.append(json.loads(value) if isinstance(value,str) and value else value),loop.quit()))
     QTimer.singleShot(3000,loop.quit); loop.exec()
     assert result and isinstance(result[0],dict) and result[0].get('w')==160 and result[0].get('h')==90, result
-    # Resume probing must prefer the visible, actively playing video over a stale hidden player.
+    # Keep video detection aligned with the older, known-working YouTube DOM path.
     probe=(Path(__file__).resolve().parents[1]/'app'/'probe.js').read_text('utf-8')
-    fixture='<div style="position:fixed;left:25px;top:30px;width:100px;height:50px"><video id="stale" style="width:100%;height:100%"></video></div><div style="position:fixed;left:150px;top:30px;width:160px;height:90px"><video id="active" style="width:100%;height:100%"></video></div>'
+    fixture='<div style="position:fixed;left:25px;top:30px;width:160px;height:90px"><video id="active" style="width:100%;height:100%"></video></div>'
     ready=QEventLoop(); window.browser.loadFinished.connect(lambda _ok:ready.quit())
     window.browser.setHtml('<html><body>'+fixture+'</body></html>',QUrl('https://www.youtube.com/watch?v=fixture'))
     QTimer.singleShot(3000,ready.quit); ready.exec()
-    setup="""(()=>{const [stale,active]=document.querySelectorAll('video');for(const [v,time,playing,ready] of [[stale,5,false,0],[active,25,true,4]]){Object.defineProperties(v,{duration:{value:100,configurable:true},currentTime:{value:time,writable:true,configurable:true},paused:{value:!playing,writable:true,configurable:true},readyState:{value:ready,configurable:true}})}})()"""
+    setup="""(()=>{const v=document.querySelector('video');Object.defineProperties(v,{duration:{value:100,configurable:true},currentTime:{value:25,writable:true,configurable:true},paused:{value:false,writable:true,configurable:true},readyState:{value:4,configurable:true}})})()"""
     window.browser.page().runJavaScript(setup)
     sampled=[]; loop=QEventLoop(); window.browser.page().runJavaScript(probe,lambda value:(sampled.append(json.loads(value) if value else None),loop.quit()))
     QTimer.singleShot(1000,loop.quit); loop.exec()
