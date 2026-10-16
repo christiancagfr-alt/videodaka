@@ -103,6 +103,12 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     with patch.object(window.extension_manager,'installExtension') as install:
         window.restore_browser_extension()
         install.assert_called_once_with(str(extension_source.resolve()))
+    class InstalledExtension:
+        def isInstalled(self): return True
+        def name(self): return '恢复测试扩展'
+    with patch.object(window.extension_manager,'setExtensionEnabled',side_effect=AssertionError('unsafe native call')) as enable:
+        window.browser_extension_loaded(InstalledExtension())
+        enable.assert_not_called()
     window.cfg['browser_extension_dir']='../../outside'; assert window._managed_extension_source() is None
     window.cfg.pop('browser_extension_dir'); window.cfg.pop('browser_extension_name')
     window.close(); app.processEvents()

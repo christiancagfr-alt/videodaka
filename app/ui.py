@@ -161,7 +161,7 @@ class Settings(QDialog):
                     note.setWordWrap(True); form.addRow(note)
             else: form.addRow(label,widget)
         extension_heading=QLabel('内嵌浏览器扩展（Manifest V3）'); extension_heading.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(extension_heading)
-        extension_note=QLabel('Qt WebEngine 支持本地 Manifest V3 Chrome 扩展。选择从可信来源取得并解压的扩展文件夹后，扩展会安装到本软件的浏览器配置中，并在下次启动时自动加载。扩展会在网页中运行，请只安装可信扩展。')
+        extension_note=QLabel('Qt WebEngine 支持安装本地 Manifest V3 Chrome 扩展。扩展会安装到本软件的浏览器配置并保存恢复副本。当前 Qt WebEngine 在 Windows 上启用扩展会导致程序崩溃，因此安装后会保持停用；YouTube 广告仍由内置过滤规则处理。请只安装可信扩展。')
         extension_note.setWordWrap(True); form.addRow(extension_note)
         extension_row=QWidget(); extension_buttons=QHBoxLayout(extension_row); extension_buttons.setContentsMargins(0,0,0,0)
         install_extension=QPushButton('安装本地扩展文件夹…'); install_extension.clicked.connect(parent.choose_browser_extension); extension_buttons.addWidget(install_extension)
@@ -651,20 +651,14 @@ class Window(QMainWindow):
         except ValueError: return None
         try: return validate_extension_directory(candidate)[0]
         except (OSError,ValueError): return None
-    def _activate_browser_extension(self,extension):
-        if extension.isInstalled() and not extension.isEnabled():
-            self.extension_manager.setExtensionEnabled(extension,True)
-        self._refresh_browser_extension_status()
     def browser_extension_loaded(self,extension):
-        expected=self.cfg.get('browser_extension_name')
-        if extension.isInstalled() and (not expected or extension.name()==expected):
-            self._activate_browser_extension(extension)
+        self._refresh_browser_extension_status()
     def restore_browser_extension(self):
         expected=self.cfg.get('browser_extension_name')
         if not expected: return
         for extension in self.extension_manager.extensions():
             if extension.isInstalled() and extension.name()==expected:
-                self._activate_browser_extension(extension); return
+                self._refresh_browser_extension_status(); return
         source=self._managed_extension_source()
         if source:
             self.banner.setText('正在恢复浏览器扩展…')
@@ -673,8 +667,8 @@ class Window(QMainWindow):
             self._refresh_browser_extension_status()
     def browser_extension_installed(self,extension):
         if extension.isInstalled():
-            self._activate_browser_extension(extension)
-            message=f'扩展已安装：{extension.name()}。刷新 YouTube 页面后生效。'
+            self._refresh_browser_extension_status()
+            message=f'扩展已安装：{extension.name()}。当前 Qt WebEngine 会将扩展保持停用，避免启用时发生崩溃。'
         else:
             source=self._managed_extension_source()
             if source:

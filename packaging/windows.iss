@@ -1,14 +1,14 @@
 [Setup]
 AppId={{4D8D18C4-0FC2-4CA1-B786-56986E8DB279}
 AppName=DevotionFlow
-AppVersion=0.2.6
+AppVersion=0.2.7
 DefaultDirName={localappdata}\Programs\DevotionFlow
 DefaultGroupName=DevotionFlow
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\release
-OutputBaseFilename=DevotionFlow-0.2.6-windows-x64-setup
+OutputBaseFilename=DevotionFlow-0.2.7-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
