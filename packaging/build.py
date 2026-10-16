@@ -62,7 +62,7 @@ else:
     machine=platform.machine().lower()
     arch={'arm64':'arm64','aarch64':'arm64','x86_64':'x64','amd64':'x64'}.get(machine)
     if not arch: raise RuntimeError(f'Unsupported macOS architecture: {machine}')
-    target=release/f'DevotionFlow-0.2.5-macos-{arch}.dmg'
+    target=release/f'DevotionFlow-0.2.6-macos-{arch}.dmg'
     subprocess.run(['hdiutil','create','-ov','-volname','DevotionFlow','-srcfolder',str(staging),
                     '-format','UDZO',str(target)],check=True)
 checksums=[]

@@ -1,5 +1,7 @@
 import calendar
 import json
+import shutil
+import uuid
 import platform
 import subprocess
 import weakref
@@ -323,6 +325,7 @@ class Window(QMainWindow):
         self.profile.setHttpAcceptLanguage('zh-CN,zh;q=0.9,en;q=0.7')
         self.extension_manager=self.profile.extensionManager()
         self.extension_manager.installFinished.connect(self.browser_extension_installed)
+        self.extension_manager.loadFinished.connect(self.browser_extension_loaded)
         self.extension_manager.uninstallFinished.connect(self.browser_extensions_removed)
         self.ad_blocker=YouTubeAdBlocker(self.profile)
         self.ad_blocker.enabled=bool(self.cfg.get('ad_block',True))
@@ -601,6 +604,9 @@ class Window(QMainWindow):
         self.settings_page=Settings(self.cfg,self,embedded=True); self.pages.addWidget(self.settings_page)
         self.select_page(0)
         self.sidebar.setVisible(not self.cfg['sidebar_collapsed'])
+        # Qt persists installed extensions, but starts them disabled. Also recover
+        # from a missing profile copy using our private source copy in the data dir.
+        QTimer.singleShot(1500,self.restore_browser_extension)
     def toggle_sidebar(self):
         self.cfg['sidebar_collapsed']=not self.cfg['sidebar_collapsed']; self.sidebar.setVisible(not self.cfg['sidebar_collapsed']); self.store.save_config(self.cfg)
     def select_page(self,index):
@@ -624,12 +630,57 @@ class Window(QMainWindow):
             f"即将安装“{manifest['name']}”。浏览器扩展可以读取或修改其权限范围内的网页内容，请确认扩展来自你信任的发布者。继续安装？",
             QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
         if answer!=QMessageBox.Yes: return
-        self.extension_manager.installExtension(str(directory))
+        try:
+            managed_root=self.store.root/'extensions'; managed_root.mkdir(parents=True,exist_ok=True)
+            managed=managed_root/uuid.uuid4().hex
+            shutil.copytree(directory,managed,symlinks=False)
+            validate_extension_directory(managed)
+        except (OSError,ValueError) as exc:
+            QMessageBox.warning(self,'扩展无法安装',f'无法复制扩展到软件数据目录：{exc}'); return
+        self.cfg['browser_extension_dir']=str(managed.relative_to(self.store.root))
+        self.cfg['browser_extension_name']=manifest['name']
+        self.store.save_config(self.cfg)
+        self.extension_manager.installExtension(str(managed))
         self.banner.setText('正在安装浏览器扩展…')
+    def _managed_extension_source(self):
+        relative=self.cfg.get('browser_extension_dir','')
+        if not isinstance(relative,str) or not relative: return None
+        root=self.store.root.resolve()
+        candidate=(root/relative).resolve()
+        try: candidate.relative_to(root)
+        except ValueError: return None
+        try: return validate_extension_directory(candidate)[0]
+        except (OSError,ValueError): return None
+    def _activate_browser_extension(self,extension):
+        if extension.isInstalled() and not extension.isEnabled():
+            self.extension_manager.setExtensionEnabled(extension,True)
+        self._refresh_browser_extension_status()
+    def browser_extension_loaded(self,extension):
+        expected=self.cfg.get('browser_extension_name')
+        if extension.isInstalled() and (not expected or extension.name()==expected):
+            self._activate_browser_extension(extension)
+    def restore_browser_extension(self):
+        expected=self.cfg.get('browser_extension_name')
+        if not expected: return
+        for extension in self.extension_manager.extensions():
+            if extension.isInstalled() and extension.name()==expected:
+                self._activate_browser_extension(extension); return
+        source=self._managed_extension_source()
+        if source:
+            self.banner.setText('正在恢复浏览器扩展…')
+            self.extension_manager.installExtension(str(source))
+        else:
+            self._refresh_browser_extension_status()
     def browser_extension_installed(self,extension):
         if extension.isInstalled():
+            self._activate_browser_extension(extension)
             message=f'扩展已安装：{extension.name()}。刷新 YouTube 页面后生效。'
         else:
+            source=self._managed_extension_source()
+            if source:
+                self.cfg.pop('browser_extension_dir',None); self.cfg.pop('browser_extension_name',None)
+                self.store.save_config(self.cfg)
+                shutil.rmtree(source,ignore_errors=True)
             message=f'扩展安装失败：{extension.error()}'
         self.banner.setText(message); self._refresh_browser_extension_status()
     def remove_browser_extensions(self):
@@ -640,7 +691,10 @@ class Window(QMainWindow):
             '将从本软件的浏览器配置中移除全部已安装扩展。是否继续？',
             QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
         if answer!=QMessageBox.Yes: return
+        source=self._managed_extension_source()
+        self.cfg.pop('browser_extension_dir',None); self.cfg.pop('browser_extension_name',None); self.store.save_config(self.cfg)
         for extension in extensions: self.extension_manager.uninstallExtension(extension)
+        if source: shutil.rmtree(source,ignore_errors=True)
         self.banner.setText('正在移除浏览器扩展…')
     def browser_extensions_removed(self,extension):
         self.banner.setText(f'已移除扩展：{extension.name()}'); self._refresh_browser_extension_status()

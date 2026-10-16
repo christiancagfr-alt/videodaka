@@ -8,7 +8,7 @@ import sys
 import tempfile
 from urllib.request import Request, urlopen
 
-VERSION = '0.2.5'
+VERSION = '0.2.6'
 REPOSITORY = 'christiancagfr-alt/videodaka'
 RELEASES_PAGE = f'https://github.com/{REPOSITORY}/releases/latest'
 API_URL = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'

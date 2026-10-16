@@ -96,6 +96,15 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     assert not download.isVisible()
     download.report('下载已开始：测试视频')
     assert window.status.text()=='下载已开始：测试视频'
+    # A saved extension source is reinstalled if Qt's profile copy is missing.
+    extension_source=root/'extensions'/'recoverable'; extension_source.mkdir(parents=True)
+    (extension_source/'manifest.json').write_text(json.dumps({'manifest_version':3,'name':'恢复测试扩展','version':'1.0.0'}),encoding='utf-8')
+    window.cfg['browser_extension_dir']='extensions/recoverable'; window.cfg['browser_extension_name']='恢复测试扩展'
+    with patch.object(window.extension_manager,'installExtension') as install:
+        window.restore_browser_extension()
+        install.assert_called_once_with(str(extension_source.resolve()))
+    window.cfg['browser_extension_dir']='../../outside'; assert window._managed_extension_source() is None
+    window.cfg.pop('browser_extension_dir'); window.cfg.pop('browser_extension_name')
     window.close(); app.processEvents()
     # WebEngine releases files asynchronously, so no deletion is required for this check.
     print('PASS: automatic registration, duplicate prevention, image upload, sidebar, hover status')
