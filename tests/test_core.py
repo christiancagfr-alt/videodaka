@@ -29,6 +29,13 @@ class Tests(unittest.TestCase):
         stats=self.store.stats('测试者','local')
         self.assertEqual(stats['total'],1); self.assertEqual(stats['qualified'],0)
         self.assertEqual(stats['nutrition_days'],0)
+    def test_user_confirmed_completion_qualifies_without_falsifying_observed_watch_time(self):
+        record=self.store.add(dict(operator='测试者',title='从记忆点续播',url='https://www.youtube.com/watch?v=remembered',
+            duration=1200,watched=300,category='电影',reflection='已看完',completion_confirmed=True),self.cfg)
+        self.assertEqual(record['watched'],300)
+        self.assertEqual(record['ratio'],.25)
+        self.assertTrue(self.store.stats('测试者','local')['qualified'])
+        self.assertEqual(self.store.stats('测试者','local')['nutrition_days'],.5)
     def test_queue_survives_restart(self):
         self.record(); other=Store(self.temp.name)
         try: self.assertEqual(sync_pending(other),(1,[])); self.assertEqual(sync_pending(other),(0,[]))

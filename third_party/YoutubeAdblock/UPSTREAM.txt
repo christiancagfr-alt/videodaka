@@ -1,0 +1,7 @@
+Upstream project: https://github.com/SysAdminDoc/YoutubeAdblock
+Upstream version: 0.8.2
+Pinned commit: 9e53f042c24f2687e5ee1dd122f181feae843cd2
+Source file: YoutubeAdblock.user.js
+SHA-256: b44f5d737405bf104b9a7a48686f33c158f996b7fefc6bd454a32136fbada032
+License: MIT; see LICENSE.
+Local adaptation: limited to YouTube hostnames; GM storage uses the local browser profile; cross-origin userscript network APIs are disabled.

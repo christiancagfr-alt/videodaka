@@ -12,7 +12,7 @@ from app.sync import insert_latest_log_row
 from app.updates import version_tuple, latest_release, current_asset_name, download_installer
 from app.oauth import oauth_client_id, _store,login,SCOPES
 from app.oauth import normalize_scopes
-from app.adblock import should_block_ad_request,validate_extension_directory
+from app.adblock import AD_HOSTS,should_block_ad_request,normalize_ad_domains,youtube_adblock_injection_source
 
 
 class SecurityTests(unittest.TestCase):
@@ -124,27 +124,38 @@ class SecurityTests(unittest.TestCase):
         for url in ('https://googleads.g.doubleclick.net/pagead/id',
                     'https://pagead2.googlesyndication.com/pagead/ads',
                     'https://www.youtube.com/pagead/1',
-                    'https://www.youtube.com/api/stats/ads'):
+                    'https://www.youtube.com/api/stats/ads',
+                    'https://www.youtube.com/get_midroll_info?video_id=x',
+                    'https://ads.youtube.com/pagead/id'):
             self.assertTrue(should_block_ad_request(url),url)
         for url in ('https://www.youtube.com/watch?v=abc',
+                    'https://www.youtube.com/youtubei/v1/player?videoId=abc',
+                    'https://www.youtube.com/youtubei/v1/log_event?alt=json',
                     'https://rr1---sn.googlevideo.com/videoplayback?id=abc',
+                    'https://rr1---sn.googlevideo.com/videoplayback?mime=video%2Fmp4&range=0-999',
                     'https://doubleclick.net.evil.test/ad',
                     'https://accounts.google.com/o/oauth2/auth'):
             self.assertFalse(should_block_ad_request(url),url)
 
-    def test_extension_folder_validation_accepts_only_named_manifest_v3(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder=Path(directory)/'extension'; folder.mkdir()
-            manifest=folder/'manifest.json'
-            manifest.write_text(json.dumps({'manifest_version':3,'name':'Local blocker','version':'1.0'}),encoding='utf-8')
-            resolved,data=validate_extension_directory(folder)
-            self.assertEqual(resolved,folder.resolve()); self.assertEqual(data['name'],'Local blocker')
-            manifest.write_text(json.dumps({'manifest_version':2,'name':'Old extension'}),encoding='utf-8')
-            with self.assertRaisesRegex(ValueError,'Manifest V3'):
-                validate_extension_directory(folder)
-            manifest.write_text('{invalid json',encoding='utf-8')
-            with self.assertRaisesRegex(ValueError,'有效的 UTF-8 JSON'):
-                validate_extension_directory(folder)
+    def test_local_ad_domain_database_validation_and_subdomain_matching(self):
+        self.assertGreaterEqual(len(AD_HOSTS),60)
+        for domain in ('doubleclick.net','criteo.com','taboola.com','tanx.com','cpro.baidu.com'):
+            self.assertIn(domain,AD_HOSTS)
+            self.assertTrue(should_block_ad_request('https://sub.'+domain+'/ad.js'))
+        self.assertFalse(should_block_ad_request('https://rr1---sn.googlevideo.com/videoplayback?id=abc'))
+        self.assertEqual(normalize_ad_domains([' Ads.Example.com. ','ads.example.com','广告.example']),
+                         ['ads.example.com','xn--4rr70v.example'])
+        self.assertTrue(should_block_ad_request('https://cdn.ads.example.com/ad.js',['ads.example.com']))
+        self.assertFalse(should_block_ad_request('https://notads.example.com/ad.js',['ads.example.com']))
+        for invalid in ('https://ads.example.com','ads.example.com/path','*.ads.example.com','not a domain'):
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError): normalize_ad_domains([invalid])
+
+    def test_pinned_youtube_userscript_is_scoped_and_remote_api_disabled(self):
+        source=youtube_adblock_injection_source()
+        self.assertIn("location.hostname",source)
+        self.assertIn("window.GM_getValue",source)
+        self.assertIn('Cross-origin GM_xmlhttpRequest is intentionally unavailable',source)
+        self.assertIn('window.GM_xmlhttpRequest = undefined',source)
 
     def test_oauth_secret_store_uses_native_platform_backend(self):
         backend=_store().get_keyring()

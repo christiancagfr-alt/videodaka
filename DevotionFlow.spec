@@ -9,7 +9,10 @@ if sys.platform=='win32':
     system=Path(os.environ['SystemRoot'])
     os.environ['PATH']=os.pathsep.join(str(p) for p in (
         Path(sys.base_prefix),Path(sys.base_prefix)/'DLLs',system/'System32',system))
-datas=[(str(root/'app/probe.js'),'app'),(str(root/'assets/devotionflow.svg'),'assets'),(str(root/'assets/devotionflow.png'),'assets')]
+datas=[(str(root/'app/probe.js'),'app'),(str(root/'assets/devotionflow.svg'),'assets'),(str(root/'assets/devotionflow.png'),'assets'),
+       (str(root/'third_party/YoutubeAdblock/YoutubeAdblock.user.js'),'third_party/YoutubeAdblock'),
+       (str(root/'third_party/YoutubeAdblock/LICENSE'),'third_party/YoutubeAdblock'),
+       (str(root/'third_party/YoutubeAdblock/UPSTREAM.txt'),'third_party/YoutubeAdblock')]
 binaries=[]
 hiddenimports=[]
 for package in ('yt_dlp','yt_dlp_ejs','keyring'):
@@ -29,5 +32,5 @@ collection=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='DevotionFl
 if sys.platform=='darwin':
     app=BUNDLE(collection,name='DevotionFlow.app',bundle_identifier='app.devotionflow.desktop',
                icon=str(root/'assets/devotionflow.icns'),
-               info_plist={'CFBundleShortVersionString':'0.2.7','CFBundleVersion':'9',
+               info_plist={'CFBundleShortVersionString':'0.2.8','CFBundleVersion':'10',
                            'NSHighResolutionCapable':True})

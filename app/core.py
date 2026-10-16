@@ -16,9 +16,10 @@ DEFAULTS = dict(operator='', mode='local', credentials='', log_id='', log_sheet=
                 name_col=1, first_person_row=5, reflection_header='认识', daily_goal=2,
                 monthly_goal=50, theme='sage', avatar='🌱', avatar_path='', sidebar_collapsed=False, mood='平静', categories=[],
                 download_dir='', download_quality='1080', ffmpeg_path='', watch_download=False, auto_install_ffmpeg=True, ad_block=True,
+                ad_domains=[],
                 screenshot_dir='', screenshot_interval=0,
                 log_header_row=1, category_sheet='分类', category_col=1, oauth_client_file='',oauth_connected=False,oauth_email='')
-HEADERS = ['登记时间','登记人','视频标题','视频链接','视频总时长','观看时长','分类','个人观后感','完播率','记录ID']
+HEADERS = ['登记时间','登记人','视频标题','视频链接','视频总时长','观看时长','分类','个人观后感','完播率','记录ID','完成确认']
 
 class Store:
     def __init__(self, root):
@@ -96,7 +97,7 @@ class Store:
 
 def is_qualified_record(record):
     return (record.get('duration',0)>=MIN_QUALIFYING_VIDEO_SECONDS and
-            record.get('ratio',0)>=MIN_WATCH_RATIO)
+            (record.get('ratio',0)>=MIN_WATCH_RATIO or record.get('completion_confirmed',False)))
 
 def growth_level(nutrition_days):
     """Map 730 ideal nutrition days (two years) across five visible stages."""
@@ -198,4 +199,4 @@ def locate(values,cfg,record):
     return rows[0],counts[0],notes[0] if notes else None
 
 def log_values(r):
-    return [r[k] for k in ('timestamp','operator','title','url','duration','watched','category','reflection','ratio','id')]
+    return [r[k] for k in ('timestamp','operator','title','url','duration','watched','category','reflection','ratio','id')]+['是（用户确认已观看至少95%）' if r.get('completion_confirmed') else '否']

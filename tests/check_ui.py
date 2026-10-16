@@ -14,24 +14,53 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     window=Window(root,offline=True)
     window.timer.stop(); window.retry.stop(); window.sync=lambda:None
     assert window.ad_blocker.enabled and 'ad_block' in window.settings_page.fields
-    assert window.extension_manager is window.profile.extensionManager()
-    assert 'Manifest V3' in window.settings_page.extension_status.text()
+    assert window.youtube_adblock_script is not None
+    assert window.profile.scripts().find('DevotionFlow YoutubeAdblock 0.8.2')
+    assert not hasattr(window,'extension_manager')
+    assert 'ad_domains' in window.settings_page.fields
+    assert 'doubleclick.net' in window.settings_page.fields['ad_domains'].toPlainText()
+    assert 'tanx.com' in window.settings_page.fields['ad_domains'].toPlainText()
+    assert all('扩展' not in button.text() for button in window.settings_page.findChildren(QPushButton))
     assert window.update_button.text()=='检查更新'
+    assert [button.text() for button in window.nav_buttons][-2:]==['◴  播放历史','▤  登记记录']
+    assert not hasattr(window,'day_history') and not hasattr(window,'analytics_history')
+    window.cfg['theme']='dark'; window.apply_theme()
+    assert window.chart.text_color.name()=='#98a0aa'
+    assert window.trend_chart.axis_color.name()=='#34373d'
+    assert window.calendar.day_colors[0]=='#65b885'
+    window.cfg['theme']='sage'; window.apply_theme()
     assert all(button.text()!='检查软件更新' for button in window.settings_page.findChildren(QPushButton))
     window.settings_page.fields['ad_block'].setChecked(False); window.save_settings_page()
     assert not window.ad_blocker.enabled
+    assert window.youtube_adblock_script is None
     window.settings_page.fields['ad_block'].setChecked(True); window.save_settings_page()
     assert window.ad_blocker.enabled
+    assert window.youtube_adblock_script is not None
+    window.settings_page.fields['ad_domains'].appendPlainText('manual.ads.example')
+    window.save_settings_page()
+    assert 'manual.ads.example' in window.cfg['ad_domains']
+    assert 'doubleclick.net' in window.cfg['ad_domains']
+    assert 'manual.ads.example' in window.ad_blocker.extra_domains
     window.cfg['operator']='测试'; window.category.setCurrentText('电影')
-    tracker=window.tracker; tracker.video='test'; tracker.duration=100; tracker.intervals=[(0,95)]
+    tracker=window.tracker; tracker.video='test'; tracker.title='测试视频'; tracker.duration=100; tracker.intervals=[(0,95)]
     window.show_tracking(); window.show_tracking()
     assert len(window.store.records())==1 and tracker.registered
+    assert window.playback_history.rowCount()==1 and window.registration_history.rowCount()==1
+    assert window.registration_history.item(0,1).text()=='测试视频'
     window.new_round(); tracker.intervals=[(0,95)]; window.show_tracking()
     assert len(window.store.records())==2
     window.new_round(); tracker=window.tracker; tracker.intervals=[(0,42)]; tracker.position=55
     window.reflection.setPlainText('保留草稿'); window.category.setCurrentText('诗歌'); window.save_draft()
     window.restore_draft('test'); assert window.tracker.watched==42 and window.resume_position==55
     assert window.reflection.toPlainText()=='保留草稿' and window.category.currentText()=='诗歌'
+    window.new_round(); tracker=window.tracker; tracker.video='abcdefghijk'; tracker.title='记忆点续播测试'; tracker.duration=1800; tracker.intervals=[(0,22.7)]
+    window.category.setCurrentText('诗歌'); window.show_tracking(); assert window.submit.isEnabled()
+    assert not window.completion_confirm_checkbox.isHidden()
+    previous_count=len(window.store.records())
+    window.completion_confirm_checkbox.setChecked(True); window.submit.click()
+    assert len(window.store.records())==previous_count+1
+    confirmed=window.store.records()[0]
+    assert confirmed['completion_confirmed'] and confirmed['ratio']<.95 and confirmed['watched']<1800
     picture=QPixmap(80,80); picture.fill(QColor('green')); source=root/'input.png'; picture.save(str(source))
     with patch('app.ui.QFileDialog.getOpenFileName',return_value=(str(source),'PNG')):
         window.settings_page.choose_avatar()
@@ -53,7 +82,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     scale=window.browser.grab().width()/window.browser.width()
     window.save_video_frame({'x':10,'y':10,'w':80,'h':60,'playing':False},automatic=False)
     wait=QEventLoop(); QTimer.singleShot(250,wait.quit); wait.exec()
-    captures=list(root.glob('*-test.png'))
+    captures=list(root.glob('*-abcdefghijk.png'))
     assert len(captures)==1
     shot=QPixmap(str(captures[0]))
     assert shot.width()==round(80*scale) and shot.height()==round(60*scale)
@@ -96,21 +125,11 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     assert not download.isVisible()
     download.report('下载已开始：测试视频')
     assert window.status.text()=='下载已开始：测试视频'
-    # A saved extension source is reinstalled if Qt's profile copy is missing.
-    extension_source=root/'extensions'/'recoverable'; extension_source.mkdir(parents=True)
-    (extension_source/'manifest.json').write_text(json.dumps({'manifest_version':3,'name':'恢复测试扩展','version':'1.0.0'}),encoding='utf-8')
-    window.cfg['browser_extension_dir']='extensions/recoverable'; window.cfg['browser_extension_name']='恢复测试扩展'
-    with patch.object(window.extension_manager,'installExtension') as install:
-        window.restore_browser_extension()
-        install.assert_called_once_with(str(extension_source.resolve()))
-    class InstalledExtension:
-        def isInstalled(self): return True
-        def name(self): return '恢复测试扩展'
-    with patch.object(window.extension_manager,'setExtensionEnabled',side_effect=AssertionError('unsafe native call')) as enable:
-        window.browser_extension_loaded(InstalledExtension())
-        enable.assert_not_called()
-    window.cfg['browser_extension_dir']='../../outside'; assert window._managed_extension_source() is None
-    window.cfg.pop('browser_extension_dir'); window.cfg.pop('browser_extension_name')
+    assert not hasattr(window,'choose_browser_extension')
+    legacy_source=root/'extensions'/'old-extension'; legacy_source.mkdir(parents=True)
+    window.cfg['browser_extension_dir']='extensions/old-extension'; window.cfg['browser_extension_name']='old'
+    window.remove_legacy_extension_source()
+    assert not legacy_source.exists() and 'browser_extension_dir' not in window.cfg
     window.close(); app.processEvents()
     # WebEngine releases files asynchronously, so no deletion is required for this check.
     print('PASS: automatic registration, duplicate prevention, image upload, sidebar, hover status')

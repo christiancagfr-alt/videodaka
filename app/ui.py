@@ -1,7 +1,6 @@
 import calendar
 import json
 import shutil
-import uuid
 import platform
 import subprocess
 import weakref
@@ -11,16 +10,16 @@ from PySide6.QtCore import Qt, QUrl, QTimer, QThread, Signal, QDate, QRectF, QSi
 from PySide6.QtGui import QColor, QTextCharFormat, QPainter, QPen, QShortcut, QKeySequence, QPixmap, QIcon, QPainterPath, QImageReader, QLinearGradient
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,
     QPushButton,QLineEdit,QTextEdit,QComboBox,QProgressBar,QSplitter,QTabWidget,QCalendarWidget,
-    QDialog,QFormLayout,QSpinBox,QDialogButtonBox,QFileDialog,QMessageBox,QTableWidget,QTableWidgetItem,QScrollArea,QGridLayout,QFrame,QStackedWidget,QCheckBox)
+    QDialog,QFormLayout,QSpinBox,QDialogButtonBox,QFileDialog,QMessageBox,QTableWidget,QTableWidgetItem,QScrollArea,QGridLayout,QFrame,QStackedWidget,QCheckBox,QPlainTextEdit,QHeaderView)
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineProfile,QWebEnginePage,QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineProfile,QWebEnginePage,QWebEngineSettings,QWebEngineScript
 from .core import (Store,Tracker,DEFAULTS,MIN_QUALIFYING_VIDEO_SECONDS,
                    MIN_WATCH_RATIO,DAILY_QUALIFIED_GOAL,GROWTH_TO_MATURE_DAYS,is_qualified_record,growth_stage)
 from .sync import sync_pending,sync_status_message,GoogleSheets
 from .downloads import DownloadDialog
 from .capture import CAPTURE_VIDEO_RECT_SCRIPT,seek_video_script
 from .security import safe_error,is_youtube_url,validate_sample,valid_video_id
-from .adblock import YouTubeAdBlocker,validate_extension_directory
+from .adblock import AD_HOSTS,YouTubeAdBlocker,normalize_ad_domains,youtube_adblock_injection_source
 
 _BACKGROUND_WORKERS=set()
 
@@ -112,7 +111,7 @@ class Settings(QDialog):
             back=QPushButton('← 返回播放与登记'); back.setObjectName('secondary'); back.clicked.connect(lambda:parent.select_page(0)); layout.addWidget(back); self.back_to_player=back
         else: self.back_to_player=None
         scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); form=QFormLayout(body); scroll.setWidget(body); layout.addWidget(scroll)
-        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','ad_block':'YouTube 广告拦截','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
+        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','ad_block':'YouTube 广告拦截','ad_domains':'本地广告域名','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
         for k,label in labels.items():
             if k=='avatar': k='avatar_path'; label='头像图片'
             sections={'operator':'登记人设置','credentials':'Google 账号连接','log_id':'谷歌表格绑定','date_row':'表格字段映射','daily_goal':'日历与成长目标','theme':'外观与个人资料','ad_block':'浏览体验','watch_download':'下载设置','log_header_row':'日志与分类字段映射'}
@@ -123,6 +122,12 @@ class Settings(QDialog):
                 widget=QCheckBox('播放时自动下载当前视频'); widget.setChecked(bool(v))
             elif k=='ad_block':
                 widget=QCheckBox('拦截常见 YouTube 广告与广告请求'); widget.setChecked(bool(v))
+            elif k=='ad_domains':
+                from PySide6.QtWidgets import QPlainTextEdit
+                try: user_domains=normalize_ad_domains(v if isinstance(v,list) else [])
+                except ValueError: user_domains=[]
+                widget=QPlainTextEdit('\n'.join(sorted(AD_HOSTS|set(user_domains)))); widget.setMaximumHeight(180)
+                widget.setPlaceholderText('每行一个域名，例如：ads.example.com')
             elif k=='auto_install_ffmpeg':
                 widget=QCheckBox('缺少 FFmpeg 时自动安装'); widget.setChecked(bool(v))
             elif k in ('mode','theme','download_quality'):
@@ -157,17 +162,13 @@ class Settings(QDialog):
             elif k in ('watch_download','auto_install_ffmpeg','ad_block'):
                 form.addRow(widget)
                 if k=='ad_block':
-                    note=QLabel('内置规则拦截常见广告域名和 YouTube 广告接口；YouTube 部分广告与视频共用 CDN，无法保证全部清除。切换后请刷新页面；若播放异常可关闭此项。')
+                    note=QLabel('启用本地请求规则及 YoutubeAdblock 开源脚本，在视频网页加载时尝试清理广告请求与播放器广告字段。保存后下次打开或刷新 YouTube 生效；服务端拼接广告仍可能出现，异常时可关闭此项。')
                     note.setWordWrap(True); form.addRow(note)
+            elif k=='ad_domains':
+                form.addRow('本地广告域名（每行一个）',widget)
+                note=QLabel('已预填常见广告投放、竞价交换、追踪统计及部分中文广告域名；可在末尾继续追加。保存后会拦截列表中的域名及子域名。请勿添加 Google 登录、YouTube、googlevideo.com 等视频域名。最多 500 条，保存在本机。')
+                note.setWordWrap(True); form.addRow(note)
             else: form.addRow(label,widget)
-        extension_heading=QLabel('内嵌浏览器扩展（Manifest V3）'); extension_heading.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(extension_heading)
-        extension_note=QLabel('Qt WebEngine 支持安装本地 Manifest V3 Chrome 扩展。扩展会安装到本软件的浏览器配置并保存恢复副本。当前 Qt WebEngine 在 Windows 上启用扩展会导致程序崩溃，因此安装后会保持停用；YouTube 广告仍由内置过滤规则处理。请只安装可信扩展。')
-        extension_note.setWordWrap(True); form.addRow(extension_note)
-        extension_row=QWidget(); extension_buttons=QHBoxLayout(extension_row); extension_buttons.setContentsMargins(0,0,0,0)
-        install_extension=QPushButton('安装本地扩展文件夹…'); install_extension.clicked.connect(parent.choose_browser_extension); extension_buttons.addWidget(install_extension)
-        remove_extensions=QPushButton('移除已安装扩展'); remove_extensions.clicked.connect(parent.remove_browser_extensions); extension_buttons.addWidget(remove_extensions)
-        form.addRow(extension_row)
-        self.extension_status=QLabel(parent.browser_extensions_status()); self.extension_status.setWordWrap(True); form.addRow('扩展状态',self.extension_status)
         section=QLabel('下载设置'); section.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(section)
         download_button=QPushButton('打开独立下载设置…'); download_button.clicked.connect(parent.open_download_settings); form.addRow(download_button)
         download_status=QLabel('选择边看边下载、画质、保存目录及缺少 FFmpeg 时的安装方式。'); download_status.setWordWrap(True); form.addRow(download_status)
@@ -211,18 +212,31 @@ class Settings(QDialog):
             QMessageBox.warning(self,'保存失败','头像文件无法保存。'); return
         self.fields['avatar_path'].setText(str(target.resolve()))
     def values(self):
-        return {k:(w.value() if isinstance(w,QSpinBox) else w.isChecked() if isinstance(w,QCheckBox) else w.currentData() if k=='theme' else w.currentText() if isinstance(w,QComboBox) else w.text().strip()) for k,w in self.fields.items()}
+        result={}
+        for k,w in self.fields.items():
+            if k=='ad_domains': result[k]=normalize_ad_domains(w.toPlainText())
+            elif isinstance(w,QSpinBox): result[k]=w.value()
+            elif isinstance(w,QCheckBox): result[k]=w.isChecked()
+            elif k=='theme': result[k]=w.currentData()
+            elif isinstance(w,QComboBox): result[k]=w.currentText()
+            elif isinstance(w,QPlainTextEdit): result[k]=w.toPlainText()
+            else: result[k]=w.text().strip()
+        return result
 
 class HabitCalendar(QCalendarWidget):
     def __init__(self):
         super().__init__(); self.days={}; self.goal=2
+        self.day_colors=('#397c5c','#a84450','#42454b')
         self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
         self.setHorizontalHeaderFormat(QCalendarWidget.ShortDayNames)
         self.setGridVisible(False)
+    def set_day_colors(self,qualified,missed,future):
+        self.day_colors=(qualified,missed,future); self.updateCells()
     def paintCell(self,p,rect,d):
         p.save(); p.setRenderHint(QPainter.Antialiasing)
         if d.month()!=self.monthShown(): p.restore(); return
-        color='#58ba83' if self.days.get(d.toString('yyyy-MM-dd'),0)>=self.goal else '#d06a70' if d<=QDate.currentDate() else '#42454b'
+        qualified,missed,future=self.day_colors
+        color=qualified if self.days.get(d.toString('yyyy-MM-dd'),0)>=self.goal else missed if d<=QDate.currentDate() else future
         center=rect.center(); size=min(26,rect.height()-5)
         p.setPen(Qt.NoPen); p.setBrush(QColor(color)); p.drawEllipse(QRectF(center.x()-size/2,center.y()-size/2,size,size))
         if d==QDate.currentDate():
@@ -258,15 +272,17 @@ class Sapling(QWidget):
         for sx in (-18,-9,2,13): p.drawEllipse(QRectF(sx,-33,2,1))
 
 class Chart(QWidget):
-    def __init__(self): super().__init__(); self.days={}; self.series={}; self.month=date.today().strftime('%Y-%m'); self.setMinimumHeight(125)
+    def __init__(self):
+        super().__init__(); self.days={}; self.series={}; self.month=date.today().strftime('%Y-%m'); self.setMinimumHeight(125)
+        self.text_color=QColor('#71877a'); self.grid_color=QColor('#d5e0d8')
     def paintEvent(self,event):
-        p=QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setPen(QColor('#8b9bb4')); p.drawText(10,20,'每日合格数量')
+        p=QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setPen(self.text_color); p.drawText(10,20,'每日合格数量')
         n=calendar.monthrange(int(self.month[:4]),int(self.month[5:]))[1]; w=self.width()-60; h=self.height()-95
         series=self.series or {'合格总数':self.days}; peak=max(2,max((v for days in series.values() for v in days.values()),default=0))
-        p.drawLine(35,55+h,35+w,55+h)
+        p.setPen(self.grid_color); p.drawLine(35,55+h,35+w,55+h)
         for tick in range(peak+1):
             if peak>10 and tick%max(1,peak//5): continue
-            p.setPen(QColor('#8b9bb4')); p.drawText(5,int(60+h-tick*h/peak),str(tick))
+            p.setPen(self.text_color); p.drawText(5,int(60+h-tick*h/peak),str(tick))
         x=15
         for name,days in series.items():
             color=category_color(name); p.setPen(color); p.drawText(x,40,name); x+=p.fontMetrics().horizontalAdvance(name)+25
@@ -278,8 +294,9 @@ class Chart(QWidget):
 class ReviewChart(QWidget):
     def __init__(self,kind):
         super().__init__(); self.kind=kind; self.rows=[]; self.month=date.today().strftime('%Y-%m'); self.setMinimumHeight(250)
+        self.text_color=QColor('#71877a'); self.axis_color=QColor('#d5e0d8'); self.accent_color=QColor('#397c5c')
     def paintEvent(self,event):
-        p=QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setPen(QColor('#97a4af'))
+        p=QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setPen(self.text_color)
         if not self.rows:
             p.drawText(self.rect(),Qt.AlignCenter,'本月暂无登记数据，完成观看后在这里复盘。'); return
         if self.kind=='categories':
@@ -290,24 +307,28 @@ class ReviewChart(QWidget):
             size=min(self.height()-50,self.width()*.42); x=20; y=(self.height()-size)/2; angle=90*16
             for i,(name,n) in enumerate(counts):
                 span=round(n/len(self.rows)*360*16); p.setPen(Qt.NoPen); p.setBrush(category_color(name)); p.drawPie(QRectF(x,y,size,size),angle,-span); angle-=span
-                p.setPen(category_color(name)); p.drawText(int(size+45),30+i*24,f'{name}  {n} 次 · {n/len(self.rows):.0%}')
+                p.setPen(self.text_color); p.drawText(int(size+45),30+i*24,f'{name}  {n} 次 · {n/len(self.rows):.0%}')
         else:
             n=calendar.monthrange(int(self.month[:4]),int(self.month[5:]))[1]; w=self.width()-70; h=self.height()-60; last=None
-            p.setPen(QColor('#56606b')); p.drawLine(45,25+h,45+w,25+h)
+            p.setPen(self.axis_color); p.drawLine(45,25+h,45+w,25+h)
             for percent in (0,50,100):
                 yy=25+h-percent*h/100; p.drawText(2,int(yy+5),f'{percent}%')
             for day in range(1,n+1):
                 records=[r for r in self.rows if r['timestamp'][8:10]==f'{day:02}']
                 if not records: last=None; continue
                 rate=sum(is_qualified_record(r) for r in records)/len(records); x=45+(day-1)*w/(n-1); y=25+h-rate*h
-                p.setPen(QPen(QColor('#65add0'),2))
+                p.setPen(QPen(self.accent_color,2))
                 if last: p.drawLine(*last,x,y)
-                p.setBrush(QColor('#65add0')); p.drawEllipse(QRectF(x-4,y-4,8,8)); last=(x,y)
+                p.setBrush(self.accent_color); p.drawEllipse(QRectF(x-4,y-4,8,8)); last=(x,y)
             p.drawText(45,self.height()-8,'1 日'); p.drawText(self.width()-55,self.height()-8,f'{n} 日')
 
 class Window(QMainWindow):
     def __init__(self,root,offline=False):
         super().__init__(); self.store=Store(root); self.cfg=self.store.config(); self.tracker=Tracker(); self.worker=None; self.oauth_worker=None; self.offline=offline
+        try: self.cfg['ad_domains']=normalize_ad_domains(self.cfg.get('ad_domains',[]))
+        except ValueError:
+            self.cfg['ad_domains']=[]; self.store.save_config(self.cfg)
+        self.remove_legacy_extension_source()
         self.setWindowTitle('静心 · 视频学习与灵修'); self.resize(1420,930)
         icon=QIcon(str(Path(__file__).resolve().parents[1]/'assets'/'devotionflow.png'))
         self.setWindowIcon(icon)
@@ -323,14 +344,11 @@ class Window(QMainWindow):
         self.profile.setCachePath(str(Path(root).resolve()/'browser-cache'))
         self.profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
         self.profile.setHttpAcceptLanguage('zh-CN,zh;q=0.9,en;q=0.7')
-        self.extension_manager=self.profile.extensionManager()
-        self.extension_manager.installFinished.connect(self.browser_extension_installed)
-        self.extension_manager.loadFinished.connect(self.browser_extension_loaded)
-        self.extension_manager.uninstallFinished.connect(self.browser_extensions_removed)
-        self.ad_blocker=YouTubeAdBlocker(self.profile)
+        self.ad_blocker=YouTubeAdBlocker(self.profile,self.cfg.get('ad_domains',[]))
         self.ad_blocker.enabled=bool(self.cfg.get('ad_block',True))
         self.profile.setUrlRequestInterceptor(self.ad_blocker)
         self.browser.setPage(BrowserPage(self.profile,self.browser))
+        self._sync_youtube_adblock_script()
         for attribute in (QWebEngineSettings.LocalContentCanAccessFileUrls,QWebEngineSettings.LocalContentCanAccessRemoteUrls,QWebEngineSettings.JavascriptCanAccessClipboard,QWebEngineSettings.JavascriptCanPaste):
             self.browser.settings().setAttribute(attribute,False)
         self.address=QLineEdit('https://www.youtube.com'); self.address.returnPressed.connect(self.navigate)
@@ -353,7 +371,6 @@ class Window(QMainWindow):
         moodrow=QHBoxLayout(); self.mood=QComboBox(); self.mood.addItems(['平静','感恩','喜悦','疲惫','低落']); self.mood.setCurrentText(self.cfg['mood']); self.mood.currentTextChanged.connect(self.save_mood); moodrow.addWidget(QLabel('今日心情')); moodrow.addWidget(self.mood); hl.addLayout(moodrow)
         self.calendar=HabitCalendar(); self.calendar.currentPageChanged.connect(self.refresh); hl.addWidget(self.calendar)
         self.summary=QLabel(); self.summary.setWordWrap(True); hl.addWidget(self.summary); self.chart=Chart(); hl.addWidget(self.chart); hl.addStretch()
-        self.history=QTableWidget(0,5); self.history.setHorizontalHeaderLabels(['时间','视频','完播率','模式/状态','错误']); self.history.setEditTriggers(QTableWidget.NoEditTriggers); tabs.addTab(self.history,'登记记录')
         # Present the journal, calendar and growth together, as in the reference.
         tabs.removeTab(tabs.indexOf(habit))
         dashboard=QWidget(); dl=QVBoxLayout(dashboard); dl.setContentsMargins(16,8,8,8); dl.setSpacing(14)
@@ -371,15 +388,19 @@ class Window(QMainWindow):
         journal, jl=card('观看笔记  /  JOURNAL'); jl.addWidget(self.title); jl.addWidget(self.metrics); jl.addWidget(self.progress)
         cr=QHBoxLayout(); cr.addWidget(QLabel('分类')); cr.addWidget(self.category,1); cr.addWidget(refresh); jl.addLayout(cr)
         self.reflection.setFixedHeight(75); jl.addWidget(self.reflection)
+        self.completion_confirm_checkbox=QCheckBox('我已实际观看至少 95%（包括从记忆点续播）')
+        self.completion_confirm_checkbox.setToolTip('勾选后按你的确认计入达标；软件仍会如实保存检测到的观看时长。')
+        self.completion_confirm_checkbox.setVisible(False)
+        self.completion_confirm_checkbox.toggled.connect(self.manual_confirmation_changed)
+        jl.addWidget(self.completion_confirm_checkbox)
         actions=QHBoxLayout(); self.submit.setObjectName('primary'); actions.addWidget(self.submit,1); actions.addWidget(reset); jl.addLayout(actions); jl.addWidget(self.status); ll.addWidget(journal)
         self.browser.setMinimumHeight(300); ll.setStretch(1,1)
-        self.history_dialog=QDialog(self); self.history_dialog.setWindowTitle('登记记录'); self.history_dialog.resize(950,550); QVBoxLayout(self.history_dialog).addWidget(self.history)
-        history_button=QPushButton('查看全部登记记录'); history_button.clicked.connect(self.history_dialog.show); dl.addWidget(history_button)
         split.setSizes([790,610]); dashboard.setMinimumWidth(560); self.resize(1480,960)
         self.browser.loadStarted.connect(lambda:self.browser_status.setText('正在加载 YouTube…'))
         self.browser.loadFinished.connect(self.loaded)
         self.browser_status=QLabel('内嵌 YouTube · 可搜索、登录及播放'); ll.insertWidget(1,self.browser_status)
         self.build_pages(layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals,brand)
+        self.manual_register_pending=False
         self.probe=Path(__file__).with_name('probe.js').read_text('utf-8'); self.timer=QTimer(self); self.timer.timeout.connect(self.poll); self.timer.start(500)
         self._sync_manual_requested=False
         self.retry=QTimer(self); self.retry.timeout.connect(self.sync); self.retry.start(60000)
@@ -398,8 +419,16 @@ class Window(QMainWindow):
         else:
             saved=self.store.load_state('last:'+self.draft_scope())
             if saved and valid_video_id(saved):
-                self.restore_draft(saved); self.browser.setUrl(QUrl('https://www.youtube.com/watch?v='+saved))
-                self.status.setText('已恢复上次视频、观看进度、分类和感想。')
+                choice=QMessageBox(self); choice.setWindowTitle('继续上次观看？')
+                choice.setText('检测到上次未完成的视频。要继续上次的视频和观看进度吗？')
+                choice.setInformativeText('选择“回到 YouTube 首页”不会清除已保存的进度、分类和观后感。')
+                resume=choice.addButton('继续上次视频',QMessageBox.AcceptRole)
+                home=choice.addButton('回到 YouTube 首页',QMessageBox.DestructiveRole)
+                choice.setDefaultButton(home); choice.exec()
+                if choice.clickedButton() is resume:
+                    self.restore_draft(saved); self.browser.setUrl(QUrl('https://www.youtube.com/watch?v='+saved))
+                    self.status.setText('已恢复上次视频与观看进度。')
+                else: self.browser.setUrl(QUrl('https://www.youtube.com/?hl=zh-CN'))
             else: self.browser.setUrl(QUrl('https://www.youtube.com/?hl=zh-CN'))
             QTimer.singleShot(3500,self.check_for_updates)
     def draft_scope(self): return self.cfg['mode']+':'+self.cfg['operator']
@@ -407,7 +436,8 @@ class Window(QMainWindow):
         if not self.draft_loading: self.draft_timer.start(350)
     def save_draft(self):
         if self.draft_loading or not self.tracker.video or self.tracker.video=='local-demo': return
-        self.store.save_state('draft:'+self.draft_scope()+':'+self.tracker.video,dict(tracker=self.tracker.snapshot(),category=self.category.currentText(),reflection=self.reflection.toPlainText()))
+        from datetime import datetime
+        self.store.save_state('draft:'+self.draft_scope()+':'+self.tracker.video,dict(tracker=self.tracker.snapshot(),category=self.category.currentText(),reflection=self.reflection.toPlainText(),saved_at=datetime.now().astimezone().isoformat(timespec='seconds')))
         self.store.save_state('last:'+self.draft_scope(),self.tracker.video)
     def restore_draft(self,video):
         saved=self.store.load_state('draft:'+self.draft_scope()+':'+video)
@@ -572,7 +602,7 @@ class Window(QMainWindow):
         self.sidebar=QFrame(); self.sidebar.setFixedWidth(175); sl=QVBoxLayout(self.sidebar); sl.setContentsMargins(8,20,8,12)
         sl.addWidget(QLabel('DEVOTION FLOW')); sl.addSpacing(24); self.nav_buttons=[]
         self.pages=QStackedWidget(); body.addWidget(self.sidebar); body.addWidget(self.pages,1)
-        for i,name in enumerate(['▶  播放与登记','▦  日历与小树','◷  数据分析','⚙  系统设置']):
+        for i,name in enumerate(['▶  播放与登记','▦  日历与小树','◷  数据分析','⚙  系统设置','◴  播放历史','▤  登记记录']):
             button=QPushButton(name); button.setCheckable(True); button.setMinimumHeight(48); button.clicked.connect(lambda checked=False,index=i:self.select_page(index)); sl.addWidget(button); self.nav_buttons.append(button)
         sl.addStretch(); sl.addWidget(QLabel('专注每一次成长'))
         dashboard.setMinimumWidth(0); dashboard.setParent(None); split.setParent(self.pages); self.pages.addWidget(split)
@@ -593,6 +623,7 @@ class Window(QMainWindow):
         dashboard.layout().removeWidget(analysis); analysis.setParent(None)
         self.pages.addWidget(dashboard); self.calendar.setFixedHeight(360); self.plant.setMinimumHeight(260)
         self.day_details=QLabel(); self.day_details.setWordWrap(True); dashboard.layout().insertWidget(3,self.day_details)
+        # Day details are summarized here; full rows remain on history pages.
         self.calendar.selectionChanged.connect(self.selected_day)
         analytics=QWidget(); av=QVBoxLayout(analytics); title=QLabel('数据分析与复盘'); title.setObjectName('heading'); av.addWidget(title)
         monthbar=QHBoxLayout(); monthbar.addWidget(QLabel('查看月份')); self.analytics_month=QComboBox(); self.analytics_month.currentTextChanged.connect(self.refresh_analytics); monthbar.addWidget(self.analytics_month); monthbar.addStretch(); av.addLayout(monthbar)
@@ -600,102 +631,115 @@ class Window(QMainWindow):
         charts=QHBoxLayout(); self.category_chart=ReviewChart('categories'); self.trend_chart=ReviewChart('trend')
         for title,widget in [('分类占比（登记次数）',self.category_chart),('每日合格长视频占比（时长≥20分钟且观看≥95%）',self.trend_chart)]:
             box=QFrame(); box.setObjectName('card'); bv=QVBoxLayout(box); bv.addWidget(QLabel(title)); bv.addWidget(widget); charts.addWidget(box)
-        av.addLayout(charts); av.addStretch(); self.pages.addWidget(analytics)
+        av.addLayout(charts)
+        self.pages.addWidget(analytics)
         self.settings_page=Settings(self.cfg,self,embedded=True); self.pages.addWidget(self.settings_page)
+        self.playback_history_page=self.history_page('播放历史','播放历史显示已保存的观看登记；双击视频可重新打开。',False)
+        self.registration_history_page=self.history_page('登记记录','登记内容、同步状态与失败原因。双击视频可重新打开。',True)
+        self.pages.addWidget(self.playback_history_page); self.pages.addWidget(self.registration_history_page)
         self.select_page(0)
         self.sidebar.setVisible(not self.cfg['sidebar_collapsed'])
-        # Qt persists installed extensions, but starts them disabled. Also recover
-        # from a missing profile copy using our private source copy in the data dir.
-        QTimer.singleShot(1500,self.restore_browser_extension)
+    def make_history_table(self,headers):
+        table=QTableWidget(0,len(headers)); table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QTableWidget.NoEditTriggers); table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setAlternatingRowColors(False); table.setSortingEnabled(False)
+        table.setShowGrid(False); table.verticalHeader().setVisible(False)
+        table.setWordWrap(False); table.setTextElideMode(Qt.ElideRight)
+        header=table.horizontalHeader(); header.setStretchLastSection(False)
+        for column in range(len(headers)):
+            header.setSectionResizeMode(column,QHeaderView.ResizeToContents)
+        if len(headers)>1: header.setSectionResizeMode(1,QHeaderView.Stretch)
+        return table
+    def history_page(self,title,description,registration):
+        page=QWidget(); layout=QVBoxLayout(page); heading=QLabel(title); heading.setObjectName('heading'); layout.addWidget(heading)
+        note=QLabel(description); note.setWordWrap(True); layout.addWidget(note)
+        headers=['登记时间','视频标题','分类','观看比例','观看时长','视频链接']
+        if registration: headers+=['完成确认','同步状态','错误信息']
+        table=self.make_history_table(headers); table.cellDoubleClicked.connect(lambda row,col:self.open_table_video(table,row)); layout.addWidget(table)
+        table.setColumnHidden(5,True)  # Keep the URL available for double-click navigation without letting it dominate the layout.
+        setattr(self,'registration_history' if registration else 'playback_history',table)
+        back=QPushButton('返回播放与登记'); back.clicked.connect(lambda:self.select_page(0)); layout.addWidget(back)
+        return page
+    def open_table_video(self,table,row):
+        item=table.item(row,table.columnCount()-1 if table is self.registration_history else 5)
+        url=item.text().strip() if item else ''
+        if not url.startswith(('https://www.youtube.com/watch?','https://youtu.be/')):
+            # Compact views keep the URL in UserRole on the title cell.
+            title_item=table.item(row,1)
+            url=title_item.data(Qt.UserRole) if title_item else ''
+        if url:
+            self.select_page(0); self.browser.setUrl(QUrl(url))
+    def populate_table(self,table,rows,kind):
+        table.setRowCount(len(rows))
+        for i,r in enumerate(rows):
+            base=[r.get('timestamp',''),r.get('title',''),r.get('category',''),f"{r.get('ratio',0):.1%}",f"{r.get('watched',0)/60:.1f} 分钟"]
+            if kind=='playback': values=base+[r.get('url','')]
+            elif kind=='registration': values=base+[r.get('url',''),'是' if r.get('completion_confirmed') else '否',r.get('status',''),r.get('error','')]
+            elif kind=='analytics': values=[r.get('timestamp','')[:10],r.get('title',''),r.get('category',''),f"{r.get('ratio',0):.1%}",f"{r.get('watched',0)/60:.1f} 分钟",'是' if is_qualified_record(r) else '否',r.get('status','')]
+            else: values=[r.get('timestamp',''),r.get('title',''),r.get('category',''),f"{r.get('ratio',0):.1%}",r.get('status','')]
+            for j,value in enumerate(values):
+                cell=QTableWidgetItem(str(value))
+                if j==1: cell.setToolTip(str(value))
+                table.setItem(i,j,cell)
+            title_column=1 if kind!='day' else 1
+            if table.item(i,title_column): table.item(i,title_column).setData(Qt.UserRole,r.get('url',''))
+        table.resizeColumnsToContents()
+    def playback_rows(self):
+        rows=self.store.records(); seen={r.get('url','') for r in rows}
+        prefix='draft:'+self.draft_scope()+':'
+        for key,value in self.store.db.execute('SELECT key,value FROM state').fetchall():
+            if not key.startswith(prefix): continue
+            try:
+                draft=json.loads(value); tracker=draft.get('tracker',{}); video=tracker.get('video','')
+                url='https://www.youtube.com/watch?v='+video
+                if not valid_video_id(video) or url in seen or tracker.get('registered'): continue
+                duration=float(tracker.get('duration',0)); spans=tracker.get('intervals',[])
+                watched=sum(float(b)-float(a) for a,b in spans)
+                rows.append(dict(timestamp=draft.get('saved_at',''),title=tracker.get('title','（未命名视频）'),
+                    category=draft.get('category',''),ratio=watched/duration if duration else 0,watched=watched,
+                    duration=duration,url=url,status='未完成草稿',error='',completion_confirmed=False))
+                seen.add(url)
+            except (ValueError,TypeError,KeyError): continue
+        return rows
     def toggle_sidebar(self):
         self.cfg['sidebar_collapsed']=not self.cfg['sidebar_collapsed']; self.sidebar.setVisible(not self.cfg['sidebar_collapsed']); self.store.save_config(self.cfg)
     def select_page(self,index):
         self.pages.setCurrentIndex(index)
         for i,button in enumerate(self.nav_buttons): button.setChecked(i==index)
-    def browser_extensions_status(self):
-        extensions=[item for item in self.extension_manager.extensions() if item.isInstalled()]
-        if not extensions: return '尚未安装扩展。可安装可信来源的 Manifest V3 扩展文件夹。'
-        return '；'.join(f"{item.name()}（{'已启用' if item.isEnabled() else '已停用'}）" for item in extensions)
-    def _refresh_browser_extension_status(self):
-        if hasattr(self,'settings_page'):
-            self.settings_page.extension_status.setText(self.browser_extensions_status())
-    def choose_browser_extension(self):
-        path=QFileDialog.getExistingDirectory(self,'选择解压后的 Chrome 扩展文件夹')
-        if not path: return
-        try:
-            directory,manifest=validate_extension_directory(path)
-        except (OSError,ValueError) as exc:
-            QMessageBox.warning(self,'扩展无法安装',str(exc)); return
-        answer=QMessageBox.question(self,'确认安装扩展',
-            f"即将安装“{manifest['name']}”。浏览器扩展可以读取或修改其权限范围内的网页内容，请确认扩展来自你信任的发布者。继续安装？",
-            QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
-        if answer!=QMessageBox.Yes: return
-        try:
-            managed_root=self.store.root/'extensions'; managed_root.mkdir(parents=True,exist_ok=True)
-            managed=managed_root/uuid.uuid4().hex
-            shutil.copytree(directory,managed,symlinks=False)
-            validate_extension_directory(managed)
-        except (OSError,ValueError) as exc:
-            QMessageBox.warning(self,'扩展无法安装',f'无法复制扩展到软件数据目录：{exc}'); return
-        self.cfg['browser_extension_dir']=str(managed.relative_to(self.store.root))
-        self.cfg['browser_extension_name']=manifest['name']
-        self.store.save_config(self.cfg)
-        self.extension_manager.installExtension(str(managed))
-        self.banner.setText('正在安装浏览器扩展…')
-    def _managed_extension_source(self):
-        relative=self.cfg.get('browser_extension_dir','')
-        if not isinstance(relative,str) or not relative: return None
-        root=self.store.root.resolve()
-        candidate=(root/relative).resolve()
-        try: candidate.relative_to(root)
-        except ValueError: return None
-        try: return validate_extension_directory(candidate)[0]
-        except (OSError,ValueError): return None
-    def browser_extension_loaded(self,extension):
-        self._refresh_browser_extension_status()
-    def restore_browser_extension(self):
-        expected=self.cfg.get('browser_extension_name')
-        if not expected: return
-        for extension in self.extension_manager.extensions():
-            if extension.isInstalled() and extension.name()==expected:
-                self._refresh_browser_extension_status(); return
-        source=self._managed_extension_source()
-        if source:
-            self.banner.setText('正在恢复浏览器扩展…')
-            self.extension_manager.installExtension(str(source))
-        else:
-            self._refresh_browser_extension_status()
-    def browser_extension_installed(self,extension):
-        if extension.isInstalled():
-            self._refresh_browser_extension_status()
-            message=f'扩展已安装：{extension.name()}。当前 Qt WebEngine 会将扩展保持停用，避免启用时发生崩溃。'
-        else:
-            source=self._managed_extension_source()
-            if source:
-                self.cfg.pop('browser_extension_dir',None); self.cfg.pop('browser_extension_name',None)
-                self.store.save_config(self.cfg)
-                shutil.rmtree(source,ignore_errors=True)
-            message=f'扩展安装失败：{extension.error()}'
-        self.banner.setText(message); self._refresh_browser_extension_status()
-    def remove_browser_extensions(self):
-        extensions=[item for item in self.extension_manager.extensions() if item.isInstalled()]
-        if not extensions:
-            self.banner.setText('目前没有已安装的浏览器扩展。'); return
-        answer=QMessageBox.question(self,'移除浏览器扩展',
-            '将从本软件的浏览器配置中移除全部已安装扩展。是否继续？',
-            QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
-        if answer!=QMessageBox.Yes: return
-        source=self._managed_extension_source()
-        self.cfg.pop('browser_extension_dir',None); self.cfg.pop('browser_extension_name',None); self.store.save_config(self.cfg)
-        for extension in extensions: self.extension_manager.uninstallExtension(extension)
-        if source: shutil.rmtree(source,ignore_errors=True)
-        self.banner.setText('正在移除浏览器扩展…')
-    def browser_extensions_removed(self,extension):
-        self.banner.setText(f'已移除扩展：{extension.name()}'); self._refresh_browser_extension_status()
+    def _sync_youtube_adblock_script(self):
+        scripts=self.profile.scripts()
+        for previous in scripts.find('DevotionFlow YoutubeAdblock 0.8.2'):
+            scripts.remove(previous)
+        self.youtube_adblock_script=None
+        if not self.cfg.get('ad_block',True): return
+        script=QWebEngineScript()
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld); script.setRunsOnSubFrames(False)
+        try: script.setSourceCode(youtube_adblock_injection_source())
+        except (OSError,UnicodeError,RuntimeError) as exc:
+            self.banner.setText('本地广告脚本未能加载，基础域名过滤仍可使用：'+str(exc)); return
+        script.setName('DevotionFlow YoutubeAdblock 0.8.2')
+        scripts.insert(script); self.youtube_adblock_script=script
+    def remove_legacy_extension_source(self):
+        """Remove only the app-managed source copy; avoid the unstable Qt extension API."""
+        had_legacy_config='browser_extension_dir' in self.cfg or 'browser_extension_name' in self.cfg
+        relative=self.cfg.pop('browser_extension_dir',None)
+        self.cfg.pop('browser_extension_name',None)
+        if relative:
+            root=self.store.root.resolve(); managed=(root/str(relative)).resolve()
+            try:
+                managed.relative_to((root/'extensions').resolve())
+                if managed.is_dir(): shutil.rmtree(managed,ignore_errors=True)
+            except ValueError: pass
+        if had_legacy_config: self.store.save_config(self.cfg)
     def save_settings_page(self):
         self.save_draft(); old_scope=self.draft_scope()
-        self.cfg.update(self.settings_page.values()); self.cfg['daily_goal']=DAILY_QUALIFIED_GOAL
-        self.ad_blocker.enabled=bool(self.cfg.get('ad_block',True)); self.store.save_config(self.cfg); self.apply_theme(); self.refresh(); self.banner.setText('设置已保存 · '+self.banner.text())
+        try: values=self.settings_page.values()
+        except ValueError as exc:
+            QMessageBox.warning(self,'广告域名无效',str(exc)); return
+        self.cfg.update(values); self.cfg['daily_goal']=DAILY_QUALIFIED_GOAL
+        self.ad_blocker.enabled=bool(self.cfg.get('ad_block',True)); self.ad_blocker.set_domains(self.cfg.get('ad_domains',[]))
+        self._sync_youtube_adblock_script(); self.store.save_config(self.cfg); self.apply_theme(); self.refresh(); self.banner.setText('设置已保存 · 广告网页脚本在下次打开页面时生效。')
         if old_scope!=self.draft_scope() and self.tracker.video: self.restore_draft(self.tracker.video)
     def reload_settings_page(self):
         for key,widget in self.settings_page.fields.items():
@@ -705,6 +749,7 @@ class Window(QMainWindow):
             elif isinstance(widget,QComboBox):
                 if key=='theme': widget.setCurrentIndex(max(0,widget.findData({'light':'sage'}.get(value,value))))
                 else: widget.setCurrentText(value)
+            elif isinstance(widget,QPlainTextEdit): widget.setPlainText('\n'.join(value if isinstance(value,list) else []))
             else: widget.setText(str(value))
     def toggle_fullscreen(self):
         if self.fullscreen_active: self.exit_fullscreen()
@@ -732,6 +777,7 @@ class Window(QMainWindow):
         note_count=sum(1 for r in self.store.records() if r['operator']==self.cfg['operator'] and r['mode']==self.cfg['mode'] and r['timestamp'].startswith(day) and is_qualified_record(r) and r['reflection'].strip())
         missing='还需至少一篇观后感' if count>=DAILY_QUALIFIED_GOAL and note_count==0 else f'还差 {max(0,DAILY_QUALIFIED_GOAL-count)} 部合格长视频'
         self.day_details.setText(f'{day} · 合格长视频 {count} 部 · '+('今日目标已达成（含观后感）。' if done else missing+'。'))
+        rows=[r for r in self.store.records() if r['operator']==self.cfg['operator'] and r['mode']==self.cfg['mode'] and r['timestamp'].startswith(day)]
     def refresh_analytics(self,*args):
         month=self.analytics_month.currentText()
         if not month: return
@@ -754,12 +800,21 @@ class Window(QMainWindow):
             'rose':dict(bg='#fbf1f1',panel='#ffffff',fg='#432e32',border='#ead4d7',accent='#bd5967',selected='#f5dfe2',muted='#94757a'),
             'dark':dict(bg='#141518',panel='#202226',fg='#eeeeef',border='#34373d',accent='#65b885',selected='#315c48',muted='#98a0aa')}
         p=palettes.get(theme,palettes['sage']); bg,panel,fg,border,accent,selected,muted=(p[k] for k in ('bg','panel','fg','border','accent','selected','muted'))
+        self.calendar.set_day_colors(accent,'#a84450' if theme!='dark' else '#8b4c54','#42454b' if theme=='dark' else '#637068')
+        for chart in (self.chart,self.category_chart,self.trend_chart):
+            chart.text_color=QColor(muted); chart.axis_color=QColor(border) if hasattr(chart,'axis_color') else chart.text_color
+            chart.grid_color=QColor(border) if hasattr(chart,'grid_color') else chart.text_color
+            chart.accent_color=QColor(accent) if hasattr(chart,'accent_color') else chart.text_color
+            chart.update()
         self.setStyleSheet(f'''QWidget {{background:{bg};color:{fg};font-family:"Microsoft YaHei UI";font-size:12px;}}
         QFrame#card {{background:{panel};border:1px solid {border};border-radius:12px;}}
         QFrame#card QLabel {{background:transparent;}}
         QLabel#heading {{font-size:24px;font-weight:700;}} QLabel#welcome {{font-size:15px;padding:4px 0 8px;}}
         QLabel#eyebrow {{font-size:11px;color:{muted};}} QLabel#statline {{font-size:18px;font-weight:600;}}
-        QLineEdit,QTextEdit,QComboBox,QSpinBox,QTableWidget {{background:{panel};border:1px solid {border};border-radius:6px;padding:7px;}}
+        QLineEdit,QTextEdit,QComboBox,QSpinBox,QTableWidget {{background:{panel};color:{fg};border:1px solid {border};border-radius:6px;padding:5px;selection-background-color:{selected};selection-color:{fg};gridline-color:{border};}}
+        QTableWidget::item {{background:{panel};color:{fg};padding:7px 8px;border:0;border-bottom:1px solid {border};}}
+        QTableWidget::item:selected {{background:{selected};color:{fg};}}
+        QHeaderView::section {{background:{selected};color:{fg};border:0;border-bottom:1px solid {border};padding:8px;font-weight:600;}}
         QPushButton {{background:{panel};border:1px solid {border};border-radius:7px;padding:8px 12px;}}
         QPushButton:hover {{border-color:{accent};}} QPushButton#primary {{background:{accent};color:white;border:0;font-weight:600;}}
         QPushButton:checked {{background:{selected};color:{fg};border-color:{accent};}} QToolTip {{background:{panel};color:{fg};border:1px solid {border};padding:12px;}}
@@ -799,6 +854,8 @@ class Window(QMainWindow):
             if not is_youtube_url(self.browser.url().toString()): self.submit.setEnabled(False); return
             data=validate_sample(data)
             if data and data['id']!=self.tracker.video:
+                self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False)
+                self.completion_confirm_checkbox.setVisible(False); self.submit.setText('确认登记并同步表格')
                 self.save_draft(); self.restore_draft(data['id'])
             if data and self.resume_position is not None:
                 position=self.resume_position
@@ -818,11 +875,24 @@ class Window(QMainWindow):
         qualification='合格长视频' if t.duration>=MIN_QUALIFYING_VIDEO_SECONDS else '短视频仅登记、不计成长养分'
         self.metrics.setText(f'观看 {t.watched:.1f} / {t.duration:.1f} 秒 · {ratio:.1%}\n已登记 {n} 次 · {qualification}需观看≥{MIN_WATCH_RATIO:.0%}'); self.submit.setEnabled(t.duration>0)
         self.submit.setEnabled(t.duration>0 and not t.registered)
+        needs_confirmation=bool(t.duration>0 and ratio<MIN_WATCH_RATIO and not t.registered)
+        self.completion_confirm_checkbox.setVisible(needs_confirmation)
+        if needs_confirmation:
+            self.submit.setText('确认达标并登记' if self.completion_confirm_checkbox.isChecked() else '按未达标登记')
+            self.completion_confirm_checkbox.setToolTip(f'软件当前记录 {ratio:.1%}。如果你从上次记忆点续播、实际已经看满 95%，请勾选；否则直接登记会保留为未达标。检测时长始终如实保存。')
+        else:
+            self.submit.setText('确认登记并同步表格')
         self.update_avatar_status()
         if t.can_auto_register(self.cfg['operator'],self.category.currentText()): self.register(automatic=True)
         elif ratio>=MIN_WATCH_RATIO and not t.registered and t.video!='local-demo':
             self.status.setText('短视频达到观看门槛，将正常登记但不计成长养分。' if t.duration<MIN_QUALIFYING_VIDEO_SECONDS else '已达到观看门槛，填写登记人和分类后将自动登记。')
-    def new_round(self): self.tracker.reset(); self.save_draft(); self.show_tracking(); self.status.setText('已开始新一轮，请从视频开头播放。')
+    def new_round(self):
+        self.tracker.reset(); self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False)
+        self.completion_confirm_checkbox.setVisible(False); self.submit.setText('确认登记并同步表格')
+        self.save_draft(); self.show_tracking(); self.status.setText('已开始新一轮，请从视频开头播放。')
+    def manual_confirmation_changed(self,checked):
+        ratio=self.tracker.watched/self.tracker.duration if self.tracker.duration else 0
+        self.submit.setText('确认达标并登记' if checked else ('按未达标登记' if ratio<MIN_WATCH_RATIO else '确认登记并同步表格'))
     def settings(self):
         self.select_page(3)
     def save_mood(self,value):
@@ -832,12 +902,20 @@ class Window(QMainWindow):
         t=self.tracker
         if t.registered: return
         if t.video=='local-demo' and self.cfg['mode']!='local': QMessageBox.warning(self,'演示数据','请先在设置中切换为 local 模式。'); return
+        completion_confirmed=False
+        ratio=t.watched/t.duration if t.duration else 0
+        if ratio<MIN_WATCH_RATIO and not automatic:
+            completion_confirmed=self.completion_confirm_checkbox.isChecked()
         try:
-            self.store.add(dict(session_id=t.round_id,operator=self.cfg['operator'],title=t.title,url='https://www.youtube.com/watch?v='+t.video,duration=t.duration,watched=t.watched,category=self.category.currentText().strip(),reflection=self.reflection.toPlainText().strip()),self.cfg)
+            self.store.add(dict(session_id=t.round_id,operator=self.cfg['operator'],title=t.title,url='https://www.youtube.com/watch?v='+t.video,duration=t.duration,watched=t.watched,category=self.category.currentText().strip(),reflection=self.reflection.toPlainText().strip(),completion_confirmed=completion_confirmed),self.cfg)
         except ValueError as e: QMessageBox.warning(self,'无法登记',str(e)); return
         t.registered=True
+        self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False); self.completion_confirm_checkbox.setVisible(False); self.submit.setText('确认登记并同步表格')
         self.save_draft()
-        self.reflection.clear(); self.refresh(); self.submit.setEnabled(False); self.status.setText(('达到 95%，已自动登记。' if automatic else '已登记。')+'本轮不会重复提交；再次观看请点击“开始新一轮观看”。'); self.sync()
+        self.reflection.clear(); self.refresh(); self.submit.setEnabled(False)
+        confirmation='（已按你的确认计入达标，实际计时仍单独保留）' if completion_confirmed else ''
+        underqualified='（本软件记录低于 95%，已保存为未达标观看记录）' if ratio<MIN_WATCH_RATIO and not completion_confirmed and not automatic else ''
+        self.status.setText(('达到 95%，已自动登记。' if automatic else '已登记。'+confirmation+underqualified)+'本轮不会重复提交；再次观看请点击“开始新一轮观看”。'); self.sync()
     def sync(self,manual=False):
         self._sync_manual_requested=self._sync_manual_requested or manual
         if self.worker and self.worker.isRunning(): return
@@ -885,10 +963,9 @@ class Window(QMainWindow):
             if q<=QDate.currentDate(): fmt.setBackground(QColor('#277c60' if stats['goal_days'].get(q.toString('yyyy-MM-dd'),False) else '#984f59')); fmt.setForeground(QColor('white'))
             self.calendar.setDateTextFormat(q,fmt)
         self.chart.days=stats['days']; self.chart.month=month; self.chart.update()
-        rows=self.store.records(); self.history.setRowCount(len(rows))
-        for i,r in enumerate(rows):
-            for j,value in enumerate([r['timestamp'],r['title'],f"{r['ratio']:.1%}",r['mode']+'/'+r['status'],r['error']]): self.history.setItem(i,j,QTableWidgetItem(value))
-        self.history.resizeColumnsToContents()
+        rows=self.store.records()
+        self.populate_table(self.playback_history,self.playback_rows(),'playback')
+        self.populate_table(self.registration_history,rows,'registration')
         pixmap=QPixmap(self.cfg['avatar_path']) if self.cfg['avatar_path'] else QPixmap()
         self.avatar.setIcon(QIcon(avatar_image(pixmap,128,circular=True))); self.avatar.setIconSize(QSize(34,34)); self.avatar.setText('' if not pixmap.isNull() else self.cfg['operator'][:1] or '我')
         self.avatar.setStyleSheet('padding:3px;border-radius:21px;')
