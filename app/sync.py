@@ -88,11 +88,16 @@ class GoogleSheets:
 
 def sync_pending(store):
     errors=[]; done=0
+    # Retries preserve each record's spreadsheet mapping, but older snapshots
+    # may predate OAuth fields. Reuse the currently connected desktop client
+    # only when the snapshot has no credential path of its own.
+    current_cfg=store.config()
     for item in store.db.execute("SELECT * FROM records WHERE status!='synced' ORDER BY rowid").fetchall():
         r=json.loads(item['payload']); cfg=DEFAULTS|json.loads(item['config'])
         # Older pending rows were saved before oauth_client_file was introduced.
         if not cfg.get('oauth_client_file'):
-            cfg['oauth_client_file']=cfg.get('credentials','')
+            cfg['oauth_client_file']=(cfg.get('credentials') or current_cfg.get('oauth_client_file')
+                                      or current_cfg.get('credentials',''))
         try:
             backend=LocalSheets(store) if cfg['mode']=='local' else GoogleSheets(cfg)
             backend.sync(r,cfg)
@@ -102,3 +107,16 @@ def sync_pending(store):
             with store.db: store.db.execute("UPDATE records SET status='pending',error=? WHERE id=?",(safe_error(e),r['id']))
             errors.append(safe_error(e))
     return done,errors
+
+def sync_status_message(ok, value, manual):
+    """Keep periodic retry failures out of the journal's prominent status line."""
+    if not manual:
+        return None
+    if not ok:
+        return '同步暂未完成；登记已保存在本地，可以继续使用，稍后可再重试。'
+    done,errors=value
+    if errors:
+        return f'{len(errors)} 条记录暂待同步，已保存在本地；可以继续登记，稍后再重试。'
+    if done:
+        return f'同步完成，{done} 条记录已写入 Google Sheets。'
+    return '同步正常，目前没有待同步记录。'

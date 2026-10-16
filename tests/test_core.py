@@ -4,7 +4,7 @@ from unittest.mock import patch,MagicMock
 from datetime import date
 from pathlib import Path
 from app.core import Store,Tracker,DEFAULTS,locate,growth_level,growth_stage,growth_size,GROWTH_TO_MATURE_DAYS
-from app.sync import LocalSheets,GoogleSheets,sync_pending
+from app.sync import LocalSheets,GoogleSheets,sync_pending,sync_status_message
 
 class Tests(unittest.TestCase):
     def setUp(self):
@@ -118,6 +118,32 @@ class Tests(unittest.TestCase):
         self.assertEqual(done,0); self.assertEqual(errors,['授权未连接'])
         self.assertEqual(backend.call_args.args[0]['oauth_client_file'],'desktop-client.json')
         self.assertNotIn('oauth_client_file',errors[0])
+
+    def test_legacy_google_retry_uses_current_oauth_client_when_snapshot_has_none(self):
+        import json
+        from unittest.mock import patch
+        record=dict(operator='测试者',title='待同步',url='https://www.youtube.com/watch?v=old2',duration=1200,
+                    watched=1140,category='电影',reflection='')
+        saved=self.store.add(record,DEFAULTS|{'mode':'google','operator':'测试者'})
+        with self.store.db:
+            self.store.db.execute('UPDATE records SET config=? WHERE id=?',(json.dumps({'mode':'google','operator':'测试者'}),saved['id']))
+        self.store.save_config(DEFAULTS|{'mode':'google','operator':'测试者','oauth_connected':True,
+                                        'oauth_client_file':'current-desktop-client.json'})
+        with patch('app.sync.GoogleSheets') as backend:
+            backend.return_value.sync.side_effect=ValueError('授权稍后重试')
+            done,errors=sync_pending(self.store)
+        self.assertEqual(done,0); self.assertEqual(errors,['授权稍后重试'])
+        self.assertEqual(backend.call_args.args[0]['oauth_client_file'],'current-desktop-client.json')
+
+    def test_background_sync_status_is_quiet_and_manual_status_is_reassuring(self):
+        self.assertIsNone(sync_status_message(True,(0,['请选择 Google Cloud OAuth JSON']),False))
+        message=sync_status_message(True,(0,['请选择 Google Cloud OAuth JSON']),True)
+        self.assertIn('暂待同步',message)
+        self.assertIn('已保存在本地',message)
+        self.assertIn('可以继续登记',message)
+        self.assertNotIn('OAuth JSON',message)
+        self.assertIsNone(sync_status_message(False,'连接失败',False))
+        self.assertIn('可以继续使用',sync_status_message(False,'连接失败',True))
     def test_draft_restores_coverage_and_crash_deduplication(self):
         tracker=Tracker(); tracker.video='test'; tracker.title='视频'; tracker.duration=100
         tracker.intervals=[(0,50),(70,90)]; tracker.position=90

@@ -14,7 +14,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineProfile,QWebEnginePage,QWebEngineSettings
 from .core import (Store,Tracker,DEFAULTS,MIN_QUALIFYING_VIDEO_SECONDS,
                    MIN_WATCH_RATIO,DAILY_QUALIFIED_GOAL,GROWTH_TO_MATURE_DAYS,is_qualified_record,growth_stage)
-from .sync import sync_pending,GoogleSheets
+from .sync import sync_pending,sync_status_message,GoogleSheets
 from .downloads import DownloadDialog
 from .capture import CAPTURE_VIDEO_RECT_SCRIPT,seek_video_script
 from .security import safe_error,is_youtube_url,validate_sample,valid_video_id
@@ -303,7 +303,7 @@ class Window(QMainWindow):
         self.setWindowIcon(icon)
         outer=QWidget(); layout=QVBoxLayout(outer); self.setCentralWidget(outer)
         bar=QHBoxLayout(); brand=QLabel(); brand.setPixmap(QPixmap(str(Path(__file__).resolve().parents[1]/'assets'/'devotionflow.png')).scaled(40,40,Qt.KeepAspectRatio,Qt.SmoothTransformation)); bar.addWidget(brand); title=QLabel('静心片刻，让所见成为成长'); title.setStyleSheet('font-size:20px;font-weight:600'); bar.addWidget(title); bar.addStretch()
-        for title,callback in [('打开 YouTube',self.open_youtube),('切换主题',self.toggle_theme),('设置',self.settings),('重试同步',self.sync),('检查更新',lambda:self.check_for_updates(manual=True))]:
+        for title,callback in [('打开 YouTube',self.open_youtube),('切换主题',self.toggle_theme),('设置',self.settings),('重试同步',lambda:self.sync(manual=True)),('检查更新',lambda:self.check_for_updates(manual=True))]:
             b=QPushButton(title); b.clicked.connect(callback); bar.addWidget(b)
             if title=='检查更新': self.update_button=b
         layout.addLayout(bar); self.banner=QLabel(); layout.addWidget(self.banner)
@@ -367,6 +367,7 @@ class Window(QMainWindow):
         self.browser_status=QLabel('内嵌 YouTube · 可搜索、登录及播放'); ll.insertWidget(1,self.browser_status)
         self.build_pages(layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals,brand)
         self.probe=Path(__file__).with_name('probe.js').read_text('utf-8'); self.timer=QTimer(self); self.timer.timeout.connect(self.poll); self.timer.start(500)
+        self._sync_manual_requested=False
         self.retry=QTimer(self); self.retry.timeout.connect(self.sync); self.retry.start(60000)
         self.apply_theme(); self.refresh()
         for label in self.findChildren(QLabel): label.setTextFormat(Qt.PlainText)
@@ -740,14 +741,17 @@ class Window(QMainWindow):
         t.registered=True
         self.save_draft()
         self.reflection.clear(); self.refresh(); self.submit.setEnabled(False); self.status.setText(('达到 95%，已自动登记。' if automatic else '已登记。')+'本轮不会重复提交；再次观看请点击“开始新一轮观看”。'); self.sync()
-    def sync(self):
+    def sync(self,manual=False):
+        self._sync_manual_requested=self._sync_manual_requested or manual
         if self.worker and self.worker.isRunning(): return
         self.worker=Worker(self.store.root); self.worker.result.connect(self.synced); self.worker.start()
     def synced(self,result):
         ok,value=result
-        if ok:
-            done,errors=value; self.status.setText(f'本轮同步 {done} 条。'+ ('待重试：'+errors[0] if errors else '同步完成。'))
-        else: self.status.setText(str(value))
+        manual=self._sync_manual_requested; self._sync_manual_requested=False
+        # Periodic retry is deliberately quiet: background errors remain in
+        # the history details, while the journal panel stays focused on use.
+        message=sync_status_message(ok,value,manual)
+        if message: self.status.setText(message)
         self.refresh()
     def categories(self):
         if self.cfg['mode']=='local': self.status.setText('本地模式使用本地历史分类，也可直接输入分类。'); return
