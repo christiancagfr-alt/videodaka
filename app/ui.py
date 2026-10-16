@@ -442,7 +442,7 @@ class Window(QMainWindow):
         if interval: self.screenshot_timer.start(interval*1000)
         else: self.screenshot_timer.stop()
         dialog.accept(); self.status.setText('截图设置已保存。'+(f'播放时每 {interval} 秒自动截图。' if interval else '自动截图已关闭；仍可手动截图。'))
-    def open_downloads(self): self.download_dialog.present(self.browser.url().toString())
+    def open_downloads(self): self.download_dialog.download_current(self.browser.url().toString())
     def open_download_settings(self):
         self.download_dialog.open_settings()
     def authorize_google(self):

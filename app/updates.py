@@ -3,7 +3,7 @@ import json
 import re
 from urllib.request import Request, urlopen
 
-VERSION = '0.2.2'
+VERSION = '0.2.3'
 REPOSITORY = 'christiancagfr-alt/videodaka'
 RELEASES_PAGE = f'https://github.com/{REPOSITORY}/releases/latest'
 API_URL = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'

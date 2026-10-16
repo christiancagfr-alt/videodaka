@@ -79,6 +79,16 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             window.download_dialog.ffmpeg_install_button.click()
             installer.assert_called_once_with('',resume_download=False)
     window.download_dialog.settings_dialog.close(); app.processEvents()
+    # The player toolbar downloads immediately without opening a separate window.
+    download=window.download_dialog; current_url='https://www.youtube.com/watch?v=manual-test'
+    download.seen.add(current_url)  # A previous finished attempt must be retryable by the user.
+    window.browser.setUrl(QUrl(current_url))
+    with patch.object(download,'start') as start_download:
+        window.open_downloads()
+        start_download.assert_called_once_with(False)
+    assert not download.isVisible()
+    download.report('下载已开始：测试视频')
+    assert window.status.text()=='下载已开始：测试视频'
     window.close(); app.processEvents()
     # WebEngine releases files asynchronously, so no deletion is required for this check.
     print('PASS: automatic registration, duplicate prevention, image upload, sidebar, hover status')

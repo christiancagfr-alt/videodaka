@@ -117,13 +117,25 @@ class DownloadDialog(QDialog):
         self.owner.store.save_config(self.owner.cfg); self.path.setText(target); self.quality.setCurrentText(quality.currentText()); dialog.accept()
         self.output.append('下载设置已保存。'+('边看边下载已开启。' if self.owner.cfg['watch_download'] else '边看边下载已关闭，仍可手动下载。'))
     def queue_current(self,url):
-        if not url or url in self.seen: return
+        if not url:
+            self.report('请先在 YouTube 打开要下载的视频。'); return
+        if url in self.seen:
+            self.report('该视频已在下载队列中，或已由边看边下载处理。'); return
         self.seen.add(url)
         if self.process.state()!=QProcess.NotRunning or self.install_process.state()!=QProcess.NotRunning:
-            self.queue.append(url); self.output.append('已加入边看边下载队列：'+safe_error(url)); return
+            self.queue.append(url); self.report('已加入下载队列：'+safe_error(url)); return
         self.url.setText(url); self.start(False)
+    def download_current(self,url):
+        """Start a user-requested download, allowing a retry after a prior attempt finishes."""
+        if self.process.state()==QProcess.NotRunning and self.install_process.state()==QProcess.NotRunning:
+            self.seen.discard(url)
+        self.queue_current(url)
+    def report(self,message):
+        """Keep download feedback visible on the player page without opening a dialog."""
+        self.output.append(message)
+        self.owner.status.setText(message)
     def failed(self,error):
-        self.output.append('下载进程错误：'+self.process.errorString()); self.single.setEnabled(True); self.playlist.setEnabled(True)
+        self.report('下载进程错误：'+self.process.errorString()); self.single.setEnabled(True); self.playlist.setEnabled(True)
     def choose(self):
         path=QFileDialog.getExistingDirectory(self,'下载目录',self.path.text())
         if path: self.path.setText(path)
@@ -133,31 +145,36 @@ class DownloadDialog(QDialog):
     def start(self,playlist):
         if self.process.state()!=QProcess.NotRunning: return
         import importlib.util
-        if not importlib.util.find_spec('yt_dlp'): self.output.append('缺少 yt-dlp，请运行 python -m pip install -r requirements.txt'); return
+        if not importlib.util.find_spec('yt_dlp'): self.report('缺少 yt-dlp，请运行 python -m pip install -r requirements.txt'); return
         target=self.url.text().strip()
         if playlist:
             target=playlist_url(target)
-            if not target: self.output.append('当前链接没有播放列表，请在 YouTube 中打开播放列表后重试。'); return
+            if not target: self.report('当前链接没有播放列表，请在 YouTube 中打开播放列表后重试。'); return
         ffmpeg=find_ffmpeg(self.owner.cfg.get('ffmpeg_path',''))
         if not ffmpeg:
             if self.owner.cfg.get('auto_install_ffmpeg',True): self.install_ffmpeg(target); return
-            self.output.append('高清视频合并需要 FFmpeg。请在下载设置中启用自动安装或手动选择 ffmpeg。'); return
+            self.report('高清视频合并需要 FFmpeg。请在下载设置中启用自动安装或手动选择 ffmpeg。'); return
         if ffmpeg!=self.owner.cfg.get('ffmpeg_path'):
             self.owner.cfg['ffmpeg_path']=ffmpeg; self.owner.store.save_config(self.owner.cfg)
         try:
             if not self.path.text().strip(): raise ValueError('请选择下载目录')
             directory=Path(self.path.text()).expanduser().resolve(); directory.mkdir(parents=True,exist_ok=True)
             args=download_arguments(target,directory,self.quality.currentText(),playlist,ffmpeg)
-        except (OSError,ValueError) as e: self.output.append(str(e)); return
+        except (OSError,ValueError) as e: self.report(str(e)); return
         self.owner.cfg.update(download_dir=str(directory),download_quality=self.quality.currentText()); self.owner.store.save_config(self.owner.cfg)
-        self.output.append('开始下载：'+target); self.single.setEnabled(False); self.playlist.setEnabled(False)
+        self.report('下载已开始：'+target); self.single.setEnabled(False); self.playlist.setEnabled(False)
         if getattr(sys,'frozen',False): args=['--download-worker',*args[2:]]
         self.process.start(sys.executable,args)
     def read_output(self):
-        self.output.append(safe_error(bytes(self.process.readAllStandardOutput()).decode('utf-8',errors='replace')))
+        text=safe_error(bytes(self.process.readAllStandardOutput()).decode('utf-8',errors='replace')).strip()
+        if text:
+            self.output.append(text)
+            # yt-dlp emits frequent progress updates; keep only the latest line in the compact player status.
+            latest=next((line.strip() for line in reversed(text.splitlines()) if line.strip()),'')
+            self.owner.status.setText(latest[:240])
     def finished(self,code,status):
         self.single.setEnabled(True); self.playlist.setEnabled(True)
-        self.output.append('下载完成。' if code==0 else '下载已停止或失败，查看上方错误。再次下载可续传。')
+        self.report('下载完成。' if code==0 else '下载已停止或失败，可从“下载设置”查看详情并重试。')
         if self.queue and self.process.state()==QProcess.NotRunning:
             next_url=self.queue.pop(0); self.url.setText(next_url); self.start(False)
     def install_ffmpeg(self,target='',resume_download=True):
@@ -172,8 +189,8 @@ class DownloadDialog(QDialog):
         else: executable=None; args=[]
         if not executable:
             if self.ffmpeg_status: self.ffmpeg_status.setText('未找到可用的安装工具。Windows 需要 winget，macOS 需要 Homebrew；也可手动选择 FFmpeg。')
-            self.output.append('未检测到可用的系统包管理器。请安装 FFmpeg（ffmpeg.org 下载页列出 Windows/macOS 构建来源），或在下载设置里手动指定。'); return
-        self._install_target=target if resume_download else ''; self.output.append('正在通过系统包管理器安装 FFmpeg…')
+            self.report('未检测到可用的系统包管理器。请安装 FFmpeg，或在下载设置里手动指定。'); return
+        self._install_target=target if resume_download else ''; self.report('正在通过系统包管理器安装 FFmpeg…')
         if self.ffmpeg_install_button: self.ffmpeg_install_button.setEnabled(False)
         if self.ffmpeg_status: self.ffmpeg_status.setText('FFmpeg 正在安装，请稍候…')
         self.install_process.start(executable,args)
@@ -181,7 +198,7 @@ class DownloadDialog(QDialog):
         if self.ffmpeg_install_button: self.ffmpeg_install_button.setEnabled(True)
         if code:
             if self.ffmpeg_status: self.ffmpeg_status.setText('FFmpeg 安装未完成，请检查系统包管理器后重试。')
-            self.output.append('FFmpeg 安装未完成。可以重试，或在下载设置中手动选择 ffmpeg。'); return
+            self.report('FFmpeg 安装未完成。可以在下载设置中重试或手动选择 ffmpeg。'); return
         if sys.platform=='darwin':
             for directory in ('/opt/homebrew/bin','/usr/local/bin'):
                 if directory not in os.environ.get('PATH',''): os.environ['PATH']=directory+os.pathsep+os.environ.get('PATH','')
@@ -194,12 +211,12 @@ class DownloadDialog(QDialog):
             self.owner.cfg['ffmpeg_path']=ffmpeg; self.owner.store.save_config(self.owner.cfg)
             if self.ffmpeg_field: self.ffmpeg_field.setText(ffmpeg)
             if self.ffmpeg_status: self.ffmpeg_status.setText('已安装并检测到 FFmpeg，路径已保存：'+ffmpeg)
-            self.output.append('FFmpeg 已安装并检测到：'+ffmpeg)
+            self.report('FFmpeg 已安装并检测到：'+ffmpeg)
             if self._install_target:
                 self.url.setText(self._install_target); self.start(False)
         else:
             if self.ffmpeg_status: self.ffmpeg_status.setText('安装程序已结束，但仍未在 PATH 检测到 FFmpeg。可重启应用后再次检测，或手动选择 ffmpeg。')
-            self.output.append('安装程序已结束。若 FFmpeg 不在当前 PATH，请重启应用后重试。')
+            self.report('安装程序已结束，但未找到 FFmpeg。请重启后检测，或在下载设置中手动选择。')
     def stop(self):
         if self.process.state()!=QProcess.NotRunning: self.process.kill()
         self.queue.clear()
