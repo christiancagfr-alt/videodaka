@@ -17,9 +17,18 @@ class Tests(unittest.TestCase):
         self.assertEqual(sync_pending(self.store),(3,[]))
         LocalSheets(self.store).sync(a,self.cfg)
         row=self.store.db.execute('SELECT * FROM local_summary').fetchone()
-        self.assertEqual(row['count'],2); self.assertIn('感恩',row['reflection']); self.assertIn('坚持',row['reflection'])
+        self.assertEqual(row['count'],3); self.assertIn('感恩',row['reflection']); self.assertIn('坚持',row['reflection'])
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM local_log').fetchone()[0],3)
         stats=self.store.stats('测试者','local'); self.assertEqual(stats['qualified'],2); self.assertEqual(stats['days'][date.today().isoformat()],2)
+    def test_short_video_is_logged_and_counted_but_not_qualified_or_nourishing(self):
+        self.record(watched=285,duration=300,reflection='短视频感想')
+        self.assertEqual(sync_pending(self.store),(1,[]))
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM local_log').fetchone()[0],1)
+        summary=self.store.db.execute('SELECT count,reflection FROM local_summary').fetchone()
+        self.assertEqual(summary['count'],1); self.assertIn('短视频感想',summary['reflection'])
+        stats=self.store.stats('测试者','local')
+        self.assertEqual(stats['total'],1); self.assertEqual(stats['qualified'],0)
+        self.assertEqual(stats['nutrition_days'],0)
     def test_queue_survives_restart(self):
         self.record(); other=Store(self.temp.name)
         try: self.assertEqual(sync_pending(other),(1,[])); self.assertEqual(sync_pending(other),(0,[]))
@@ -53,6 +62,22 @@ class Tests(unittest.TestCase):
         backend.sync(r,self.cfg); ws.spreadsheet.batch_update.assert_not_called()
         ws.spreadsheet.fetch_sheet_metadata.return_value={'sheets':[{'data':[{'rowData':[{'values':[{'note':'• 《测试视频》'}]}]}]}], 'developerMetadata':[{'metadataKey':'devotion_record','metadataValue':r['id']}]}
         backend.sync(r,self.cfg); ws.spreadsheet.batch_update.assert_not_called()
+    def test_google_short_video_updates_log_and_category_summary(self):
+        r=self.record(watched=285,duration=300,reflection='短视频感想')
+        r['category']='诗歌舞蹈'
+        backend=object.__new__(GoogleSheets)
+        log=MagicMock(); log.row_values.return_value=list(__import__('app.core',fromlist=['HEADERS']).HEADERS); log.col_values.return_value=[]
+        ws=MagicMock(); ws.title='月份'; ws.id=7
+        ws.get_all_values.return_value=[['',date.today().isoformat(),'',''],['姓名','是否达标','认识','诗歌舞蹈'],[],[],['测试者','','',2]]
+        ws.spreadsheet.fetch_sheet_metadata.return_value={'sheets':[{'data':[{'rowData':[{'values':[{}]}]}]}]}
+        ws.acell.return_value.value='2'; ws.cell.return_value.value=''
+        backend.sheet=lambda key,title: log if title==self.cfg['log_sheet'] else ws
+        backend.sync(r,self.cfg)
+        log.insert_row.assert_called_once()
+        requests=ws.spreadsheet.batch_update.call_args[0][0]['requests']
+        self.assertEqual(requests[0]['updateCells']['rows'][0]['values'][0]['userEnteredValue']['numberValue'],3)
+        self.assertIn('《测试视频》',requests[0]['updateCells']['rows'][0]['values'][0]['note'])
+        self.assertIn('短视频感想',requests[1]['updateCells']['rows'][0]['values'][0]['userEnteredValue']['stringValue'])
     def test_seek_pause_speed_and_repeat(self):
         t=Tracker()
         def sample(pos,clock,playing=True,rate=1): t.sample(dict(id='a',title='A',duration=100,position=pos,clock=clock,playing=playing,rate=rate))

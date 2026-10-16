@@ -12,7 +12,7 @@ from app.sync import insert_latest_log_row
 from app.updates import version_tuple, latest_release, current_asset_name, download_installer
 from app.oauth import oauth_client_id, _store,login,SCOPES
 from app.oauth import normalize_scopes
-from app.adblock import should_block_ad_request
+from app.adblock import should_block_ad_request,validate_extension_directory
 
 
 class SecurityTests(unittest.TestCase):
@@ -131,6 +131,20 @@ class SecurityTests(unittest.TestCase):
                     'https://doubleclick.net.evil.test/ad',
                     'https://accounts.google.com/o/oauth2/auth'):
             self.assertFalse(should_block_ad_request(url),url)
+
+    def test_extension_folder_validation_accepts_only_named_manifest_v3(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory)/'extension'; folder.mkdir()
+            manifest=folder/'manifest.json'
+            manifest.write_text(json.dumps({'manifest_version':3,'name':'Local blocker','version':'1.0'}),encoding='utf-8')
+            resolved,data=validate_extension_directory(folder)
+            self.assertEqual(resolved,folder.resolve()); self.assertEqual(data['name'],'Local blocker')
+            manifest.write_text(json.dumps({'manifest_version':2,'name':'Old extension'}),encoding='utf-8')
+            with self.assertRaisesRegex(ValueError,'Manifest V3'):
+                validate_extension_directory(folder)
+            manifest.write_text('{invalid json',encoding='utf-8')
+            with self.assertRaisesRegex(ValueError,'有效的 UTF-8 JSON'):
+                validate_extension_directory(folder)
 
     def test_oauth_secret_store_uses_native_platform_backend(self):
         backend=_store().get_keyring()

@@ -1,5 +1,5 @@
 import json
-from .core import HEADERS, DEFAULTS, locate, log_values, is_qualified_record
+from .core import HEADERS, DEFAULTS, locate, log_values
 from .security import safe_error
 
 class LocalSheets:
@@ -8,7 +8,7 @@ class LocalSheets:
         db=self.store.db
         with db:
             db.execute('INSERT OR IGNORE INTO local_log VALUES(?,?)',(r['id'],json.dumps(r,ensure_ascii=False)))
-            if not is_qualified_record(r) or db.execute('SELECT 1 FROM local_applied WHERE id=?',(r['id'],)).fetchone(): return
+            if db.execute('SELECT 1 FROM local_applied WHERE id=?',(r['id'],)).fetchone(): return
             key=json.dumps([r['operator'],r['timestamp'][:10],r['category']],ensure_ascii=False)
             old=db.execute('SELECT count,reflection FROM local_summary WHERE key=?',(key,)).fetchone()
             note=f"• 《{r['title']}》: {r['reflection']}" if r['reflection'] else ''
@@ -55,7 +55,6 @@ class GoogleSheets:
         if any(header.count(h)!=1 for h in HEADERS): raise ValueError('日志表存在重复字段名')
         mapping=dict(zip(HEADERS,log_values(r)))
         insert_latest_log_row(log,header,[mapping.get(h,'') for h in header],r['id'],cfg['log_header_row'])
-        if not is_qualified_record(r): return
         ws=self.sheet(cfg['summary_id'],cfg['summary_sheet'])
         values=ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
         row,col,note_col=locate(values,cfg,r)

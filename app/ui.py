@@ -18,7 +18,7 @@ from .sync import sync_pending,sync_status_message,GoogleSheets
 from .downloads import DownloadDialog
 from .capture import CAPTURE_VIDEO_RECT_SCRIPT,seek_video_script
 from .security import safe_error,is_youtube_url,validate_sample,valid_video_id
-from .adblock import YouTubeAdBlocker
+from .adblock import YouTubeAdBlocker,validate_extension_directory
 
 _BACKGROUND_WORKERS=set()
 
@@ -158,6 +158,14 @@ class Settings(QDialog):
                     note=QLabel('内置规则拦截常见广告域名和 YouTube 广告接口；YouTube 部分广告与视频共用 CDN，无法保证全部清除。切换后请刷新页面；若播放异常可关闭此项。')
                     note.setWordWrap(True); form.addRow(note)
             else: form.addRow(label,widget)
+        extension_heading=QLabel('内嵌浏览器扩展（Manifest V3）'); extension_heading.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(extension_heading)
+        extension_note=QLabel('Qt WebEngine 支持本地 Manifest V3 Chrome 扩展。选择从可信来源取得并解压的扩展文件夹后，扩展会安装到本软件的浏览器配置中，并在下次启动时自动加载。扩展会在网页中运行，请只安装可信扩展。')
+        extension_note.setWordWrap(True); form.addRow(extension_note)
+        extension_row=QWidget(); extension_buttons=QHBoxLayout(extension_row); extension_buttons.setContentsMargins(0,0,0,0)
+        install_extension=QPushButton('安装本地扩展文件夹…'); install_extension.clicked.connect(parent.choose_browser_extension); extension_buttons.addWidget(install_extension)
+        remove_extensions=QPushButton('移除已安装扩展'); remove_extensions.clicked.connect(parent.remove_browser_extensions); extension_buttons.addWidget(remove_extensions)
+        form.addRow(extension_row)
+        self.extension_status=QLabel(parent.browser_extensions_status()); self.extension_status.setWordWrap(True); form.addRow('扩展状态',self.extension_status)
         section=QLabel('下载设置'); section.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(section)
         download_button=QPushButton('打开独立下载设置…'); download_button.clicked.connect(parent.open_download_settings); form.addRow(download_button)
         download_status=QLabel('选择边看边下载、画质、保存目录及缺少 FFmpeg 时的安装方式。'); download_status.setWordWrap(True); form.addRow(download_status)
@@ -313,6 +321,9 @@ class Window(QMainWindow):
         self.profile.setCachePath(str(Path(root).resolve()/'browser-cache'))
         self.profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
         self.profile.setHttpAcceptLanguage('zh-CN,zh;q=0.9,en;q=0.7')
+        self.extension_manager=self.profile.extensionManager()
+        self.extension_manager.installFinished.connect(self.browser_extension_installed)
+        self.extension_manager.uninstallFinished.connect(self.browser_extensions_removed)
         self.ad_blocker=YouTubeAdBlocker(self.profile)
         self.ad_blocker.enabled=bool(self.cfg.get('ad_block',True))
         self.profile.setUrlRequestInterceptor(self.ad_blocker)
@@ -595,6 +606,44 @@ class Window(QMainWindow):
     def select_page(self,index):
         self.pages.setCurrentIndex(index)
         for i,button in enumerate(self.nav_buttons): button.setChecked(i==index)
+    def browser_extensions_status(self):
+        extensions=[item for item in self.extension_manager.extensions() if item.isInstalled()]
+        if not extensions: return '尚未安装扩展。可安装可信来源的 Manifest V3 扩展文件夹。'
+        return '；'.join(f"{item.name()}（{'已启用' if item.isEnabled() else '已停用'}）" for item in extensions)
+    def _refresh_browser_extension_status(self):
+        if hasattr(self,'settings_page'):
+            self.settings_page.extension_status.setText(self.browser_extensions_status())
+    def choose_browser_extension(self):
+        path=QFileDialog.getExistingDirectory(self,'选择解压后的 Chrome 扩展文件夹')
+        if not path: return
+        try:
+            directory,manifest=validate_extension_directory(path)
+        except (OSError,ValueError) as exc:
+            QMessageBox.warning(self,'扩展无法安装',str(exc)); return
+        answer=QMessageBox.question(self,'确认安装扩展',
+            f"即将安装“{manifest['name']}”。浏览器扩展可以读取或修改其权限范围内的网页内容，请确认扩展来自你信任的发布者。继续安装？",
+            QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
+        if answer!=QMessageBox.Yes: return
+        self.extension_manager.installExtension(str(directory))
+        self.banner.setText('正在安装浏览器扩展…')
+    def browser_extension_installed(self,extension):
+        if extension.isInstalled():
+            message=f'扩展已安装：{extension.name()}。刷新 YouTube 页面后生效。'
+        else:
+            message=f'扩展安装失败：{extension.error()}'
+        self.banner.setText(message); self._refresh_browser_extension_status()
+    def remove_browser_extensions(self):
+        extensions=[item for item in self.extension_manager.extensions() if item.isInstalled()]
+        if not extensions:
+            self.banner.setText('目前没有已安装的浏览器扩展。'); return
+        answer=QMessageBox.question(self,'移除浏览器扩展',
+            '将从本软件的浏览器配置中移除全部已安装扩展。是否继续？',
+            QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
+        if answer!=QMessageBox.Yes: return
+        for extension in extensions: self.extension_manager.uninstallExtension(extension)
+        self.banner.setText('正在移除浏览器扩展…')
+    def browser_extensions_removed(self,extension):
+        self.banner.setText(f'已移除扩展：{extension.name()}'); self._refresh_browser_extension_status()
     def save_settings_page(self):
         self.save_draft(); old_scope=self.draft_scope()
         self.cfg.update(self.settings_page.values()); self.cfg['daily_goal']=DAILY_QUALIFIED_GOAL

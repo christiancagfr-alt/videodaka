@@ -48,8 +48,10 @@ for path in (root/'dist').rglob('*'):
 if sys.platform=='win32':
     compiler=shutil.which('ISCC.exe')
     if not compiler:
-        candidate=Path(os.environ.get('ProgramFiles(x86)',r'C:\Program Files (x86)'))/'Inno Setup 6/ISCC.exe'
-        if candidate.exists(): compiler=str(candidate)
+        candidates=(Path(os.environ.get('LOCALAPPDATA',''))/'Programs/Inno Setup 6/ISCC.exe',
+                    Path(os.environ.get('ProgramFiles(x86)',r'C:\Program Files (x86)'))/'Inno Setup 6/ISCC.exe',
+                    Path(os.environ.get('ProgramFiles',r'C:\Program Files'))/'Inno Setup 6/ISCC.exe')
+        compiler=next((str(candidate) for candidate in candidates if candidate.is_file()),None)
     if not compiler: raise RuntimeError('Inno Setup 6 is required to create the Windows installer')
     subprocess.run([compiler,str(root/'packaging/windows.iss')],check=True)
 else:
@@ -60,7 +62,7 @@ else:
     machine=platform.machine().lower()
     arch={'arm64':'arm64','aarch64':'arm64','x86_64':'x64','amd64':'x64'}.get(machine)
     if not arch: raise RuntimeError(f'Unsupported macOS architecture: {machine}')
-    target=release/f'DevotionFlow-0.2.4-macos-{arch}.dmg'
+    target=release/f'DevotionFlow-0.2.5-macos-{arch}.dmg'
     subprocess.run(['hdiutil','create','-ov','-volname','DevotionFlow','-srcfolder',str(staging),
                     '-format','UDZO',str(target)],check=True)
 checksums=[]

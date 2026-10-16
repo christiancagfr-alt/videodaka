@@ -14,6 +14,8 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     window=Window(root,offline=True)
     window.timer.stop(); window.retry.stop(); window.sync=lambda:None
     assert window.ad_blocker.enabled and 'ad_block' in window.settings_page.fields
+    assert window.extension_manager is window.profile.extensionManager()
+    assert 'Manifest V3' in window.settings_page.extension_status.text()
     assert window.update_button.text()=='检查更新'
     assert all(button.text()!='检查软件更新' for button in window.settings_page.findChildren(QPushButton))
     window.settings_page.fields['ad_block'].setChecked(False); window.save_settings_page()
