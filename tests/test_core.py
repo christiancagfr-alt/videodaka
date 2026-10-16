@@ -3,17 +3,17 @@ import unittest
 from unittest.mock import patch,MagicMock
 from datetime import date
 from pathlib import Path
-from app.core import Store,Tracker,DEFAULTS,locate
+from app.core import Store,Tracker,DEFAULTS,locate,growth_level,growth_stage,growth_size,GROWTH_TO_MATURE_DAYS
 from app.sync import LocalSheets,GoogleSheets,sync_pending
 
 class Tests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.store=Store(self.temp.name); self.cfg=DEFAULTS|{'operator':'测试者'}
     def tearDown(self): self.store.db.close(); self.temp.cleanup()
-    def record(self,watched=95,reflection='感恩'):
-        return self.store.add(dict(operator='测试者',title='测试视频',url='https://www.youtube.com/watch?v=test',duration=100,watched=watched,category='电影',reflection=reflection),self.cfg)
+    def record(self,watched=95,reflection='感恩',duration=100):
+        return self.store.add(dict(operator='测试者',title='测试视频',url='https://www.youtube.com/watch?v=test',duration=duration,watched=watched,category='电影',reflection=reflection),self.cfg)
     def test_threshold_repeat_and_notes(self):
-        self.record(94); a=self.record(); self.record(reflection='坚持')
+        self.record(94); a=self.record(watched=1140,duration=1200); self.record(watched=1140,reflection='坚持',duration=1200)
         self.assertEqual(sync_pending(self.store),(3,[]))
         LocalSheets(self.store).sync(a,self.cfg)
         row=self.store.db.execute('SELECT * FROM local_summary').fetchone()
@@ -32,7 +32,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.store.records()[0]['status'],'pending')
         self.assertEqual(sync_pending(self.store),(1,[]))
     def test_google_batch_marker_and_formula_guard(self):
-        r=self.record(); backend=object.__new__(GoogleSheets)
+        r=self.record(watched=1140,duration=1200); backend=object.__new__(GoogleSheets)
         log=MagicMock(); log.row_values.return_value=list(__import__('app.core',fromlist=['HEADERS']).HEADERS); log.col_values.return_value=[r['id']]
         ws=MagicMock(); ws.title='月份'; ws.id=7
         ws.get_all_values.return_value=[['',date.today().isoformat(),'',''],['姓名','是否达标','认识','电影'],[],[],['测试者','','旧认识',2]]
@@ -73,8 +73,51 @@ class Tests(unittest.TestCase):
         t.video='local-demo'; self.assertFalse(t.can_auto_register('张三','电影'))
     def test_growth_starts_with_seedling(self):
         self.assertEqual(self.store.stats('测试者','local')['level'],1)
-        for _ in range(5): self.record()
-        self.assertEqual(self.store.stats('测试者','local')['level'],2)
+        # Short videos remain in the journal but provide no growth nutrition.
+        self.record(duration=1199,watched=1199)
+        self.assertEqual(self.store.stats('测试者','local')['nutrition_days'],0)
+        self.record(duration=1200,watched=1140,reflection='')
+        partial=self.store.stats('测试者','local')
+        self.assertEqual(partial['nutrition_days'],.25)  # One long video without a reflection.
+        self.record(duration=1200,watched=1140,reflection='')
+        undernourished=self.store.stats('测试者','local')
+        self.assertFalse(undernourished['goal_days'][date.today().isoformat()])
+        self.assertEqual(undernourished['nutrition_days'],.5)
+        self.record(duration=1200,watched=1140,reflection='感想')
+        nourished=self.store.stats('测试者','local')
+        self.assertEqual(nourished['qualified'],3)
+        self.assertTrue(nourished['goal_days'][date.today().isoformat()])
+        self.assertEqual(nourished['nutrition_days'],1)
+        self.assertEqual(nourished['level'],1)
+        self.assertEqual(growth_level(0),1)
+        self.assertEqual(growth_level(GROWTH_TO_MATURE_DAYS/4),2)
+        self.assertEqual(growth_level(GROWTH_TO_MATURE_DAYS),5)
+    def test_tree_continues_to_gain_size_after_maturity(self):
+        self.assertEqual(growth_stage(0),'幼苗')
+        self.assertEqual(growth_stage(365),'树苗')
+        self.assertEqual(growth_stage(GROWTH_TO_MATURE_DAYS),'青年树')
+        self.assertEqual(growth_stage(10*365),'成树')
+        self.assertEqual(growth_stage(80*365),'古树')
+        self.assertEqual(growth_size(GROWTH_TO_MATURE_DAYS),1)
+        self.assertGreater(growth_size(40*365),growth_size(GROWTH_TO_MATURE_DAYS))
+        self.assertGreater(growth_size(100*365),growth_size(40*365))
+
+    def test_legacy_google_retry_config_uses_previous_credentials_key(self):
+        import json
+        from unittest.mock import patch
+        cfg={'mode':'google','credentials':'desktop-client.json','log_id':'log','log_sheet':'日志',
+             'summary_id':'summary','summary_sheet':'10月'}
+        record=dict(operator='测试者',title='待同步',url='https://www.youtube.com/watch?v=old',duration=1200,
+                    watched=1140,category='电影',reflection='')
+        saved=self.store.add(record,cfg)
+        with self.store.db:
+            self.store.db.execute('UPDATE records SET config=? WHERE id=?',(json.dumps(cfg),saved['id']))
+        with patch('app.sync.GoogleSheets') as backend:
+            backend.return_value.sync.side_effect=ValueError('授权未连接')
+            done,errors=sync_pending(self.store)
+        self.assertEqual(done,0); self.assertEqual(errors,['授权未连接'])
+        self.assertEqual(backend.call_args.args[0]['oauth_client_file'],'desktop-client.json')
+        self.assertNotIn('oauth_client_file',errors[0])
     def test_draft_restores_coverage_and_crash_deduplication(self):
         tracker=Tracker(); tracker.video='test'; tracker.title='视频'; tracker.duration=100
         tracker.intervals=[(0,50),(70,90)]; tracker.position=90

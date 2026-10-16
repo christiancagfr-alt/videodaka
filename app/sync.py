@@ -1,5 +1,5 @@
 import json
-from .core import HEADERS, locate, log_values
+from .core import HEADERS, DEFAULTS, locate, log_values, is_qualified_record
 from .security import safe_error
 
 class LocalSheets:
@@ -8,7 +8,7 @@ class LocalSheets:
         db=self.store.db
         with db:
             db.execute('INSERT OR IGNORE INTO local_log VALUES(?,?)',(r['id'],json.dumps(r,ensure_ascii=False)))
-            if r['ratio']<.95 or db.execute('SELECT 1 FROM local_applied WHERE id=?',(r['id'],)).fetchone(): return
+            if not is_qualified_record(r) or db.execute('SELECT 1 FROM local_applied WHERE id=?',(r['id'],)).fetchone(): return
             key=json.dumps([r['operator'],r['timestamp'][:10],r['category']],ensure_ascii=False)
             old=db.execute('SELECT count,reflection FROM local_summary WHERE key=?',(key,)).fetchone()
             note=f"• 《{r['title']}》: {r['reflection']}" if r['reflection'] else ''
@@ -27,7 +27,10 @@ class GoogleSheets:
     def __init__(self,cfg):
         import gspread
         from .oauth import load_credentials,oauth_client_id
-        credentials=load_credentials(oauth_client_id(cfg['oauth_client_file']))
+        client_file=cfg.get('oauth_client_file') or cfg.get('credentials')
+        if not client_file:
+            raise ValueError('Google 登录配置缺少桌面 OAuth 客户端文件，请在设置中重新连接 Google 账号。')
+        credentials=load_credentials(oauth_client_id(client_file))
         if credentials is None: raise ValueError('当前 OAuth 客户端没有可读取的 Google 登录令牌。请在设置中重新连接账号，并等应用提示令牌验证完成。')
         self.client=gspread.authorize(credentials)
         self.client.set_timeout(25)
@@ -52,7 +55,7 @@ class GoogleSheets:
         if any(header.count(h)!=1 for h in HEADERS): raise ValueError('日志表存在重复字段名')
         mapping=dict(zip(HEADERS,log_values(r)))
         insert_latest_log_row(log,header,[mapping.get(h,'') for h in header],r['id'],cfg['log_header_row'])
-        if r['ratio']<.95: return
+        if not is_qualified_record(r): return
         ws=self.sheet(cfg['summary_id'],cfg['summary_sheet'])
         values=ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
         row,col,note_col=locate(values,cfg,r)
@@ -86,7 +89,10 @@ class GoogleSheets:
 def sync_pending(store):
     errors=[]; done=0
     for item in store.db.execute("SELECT * FROM records WHERE status!='synced' ORDER BY rowid").fetchall():
-        r=json.loads(item['payload']); cfg=json.loads(item['config'])
+        r=json.loads(item['payload']); cfg=DEFAULTS|json.loads(item['config'])
+        # Older pending rows were saved before oauth_client_file was introduced.
+        if not cfg.get('oauth_client_file'):
+            cfg['oauth_client_file']=cfg.get('credentials','')
         try:
             backend=LocalSheets(store) if cfg['mode']=='local' else GoogleSheets(cfg)
             backend.sync(r,cfg)

@@ -1,12 +1,18 @@
 """Google desktop OAuth with refresh tokens held in the native OS credential store."""
 import hashlib
 import json
+import os
 
 SERVICE='DevotionFlow Google OAuth'
 # Use Google's canonical URI for the email scope. The short alias `email` is
 # returned as `userinfo.email` by Google's token endpoint, which oauthlib treats
 # as a scope change and rejects during the desktop OAuth callback.
 SCOPES=['openid','https://www.googleapis.com/auth/userinfo.email','https://www.googleapis.com/auth/spreadsheets']
+GOOGLE_SCOPE_ALIASES={'email':'https://www.googleapis.com/auth/userinfo.email'}
+
+def normalize_scopes(scopes):
+    if isinstance(scopes,str): scopes=scopes.split()
+    return {GOOGLE_SCOPE_ALIASES.get(scope,scope) for scope in (scopes or [])}
 
 def oauth_client_id(path):
     from pathlib import Path
@@ -52,10 +58,28 @@ def load_credentials(client_id):
 def login(client_file):
     from google_auth_oauthlib.flow import InstalledAppFlow
     flow=InstalledAppFlow.from_client_secrets_file(client_file,SCOPES)
-    credentials=flow.run_local_server(host='localhost',port=0,open_browser=True,
-        authorization_prompt_message='正在打开默认浏览器进行 Google 授权…',
-        success_message='授权完成。可以关闭此页面并返回 DevotionFlow。',
-        access_type='offline',prompt='consent')
+    # Google may return the documented `email` alias for the full userinfo
+    # scope. oauthlib otherwise raises Warning before the app can verify grants.
+    # Relax only for this isolated worker call; the granted scopes are checked
+    # explicitly below, and the environment is restored immediately afterward.
+    previous=os.environ.get('OAUTHLIB_RELAX_TOKEN_SCOPE')
+    os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE']='1'
+    try:
+        credentials=flow.run_local_server(host='localhost',port=0,open_browser=True,
+            authorization_prompt_message='正在打开默认浏览器进行 Google 授权…',
+            success_message='Google 已返回授权结果。请回到 DevotionFlow 等待“已连接”确认，不要再次发起授权。若应用显示失败，再重试。',
+            access_type='offline',prompt='consent',timeout_seconds=300)
+    finally:
+        if previous is None: os.environ.pop('OAUTHLIB_RELAX_TOKEN_SCOPE',None)
+        else: os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE']=previous
+    # `scopes` on google-auth Credentials is the requested scope list; use
+    # `granted_scopes` when Google returned the actual list. An omitted list
+    # means the server kept the requested scope under RFC 6749.
+    actual_scopes=getattr(credentials,'granted_scopes',None)
+    granted=normalize_scopes(actual_scopes if actual_scopes is not None else SCOPES)
+    required=normalize_scopes(SCOPES)
+    if not required.issubset(granted):
+        raise RuntimeError('Google 登录已完成，但返回的授权范围不完整。请确认同意 Sheets 和邮箱权限后重试。')
     info=credentials.id_token
     email=''
     if isinstance(info,dict): email=info.get('email','')

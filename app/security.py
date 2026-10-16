@@ -4,7 +4,7 @@ import math
 import os
 from pathlib import Path
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,parse_qs
 
 YOUTUBE_HOSTS={'youtube.com','www.youtube.com','m.youtube.com','music.youtube.com'}
 TOKEN_URIS={'https://oauth2.googleapis.com/token','https://accounts.google.com/o/oauth2/token'}
@@ -14,6 +14,18 @@ def is_youtube_url(url):
         parsed=urlsplit(url)
         return parsed.scheme=='https' and parsed.hostname in YOUTUBE_HOSTS and parsed.port in (None,443) and not parsed.username and not parsed.password
     except ValueError: return False
+
+def is_youtube_video_url(url):
+    """Accept only a concrete YouTube video page for player download actions."""
+    try:
+        if not is_youtube_url(url): return False
+        parsed=urlsplit(url)
+        if parsed.path=='/watch':
+            ids=parse_qs(parsed.query).get('v',[])
+            return len(ids)==1 and valid_video_id(ids[0])
+        parts=parsed.path.split('/')
+        return len(parts)==3 and parts[1]=='shorts' and valid_video_id(parts[2])
+    except (TypeError,ValueError): return False
 
 def valid_video_id(value):
     return isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}',value) is not None

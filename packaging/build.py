@@ -57,7 +57,10 @@ else:
     subprocess.run(['ditto',str(root/'dist/DevotionFlow.app'),str(staging/'DevotionFlow.app')],check=True)
     link=staging/'Applications'
     if not link.exists(): link.symlink_to('/Applications')
-    target=release/f'DevotionFlow-0.2.3-macos-{platform.machine()}.dmg'
+    machine=platform.machine().lower()
+    arch={'arm64':'arm64','aarch64':'arm64','x86_64':'x64','amd64':'x64'}.get(machine)
+    if not arch: raise RuntimeError(f'Unsupported macOS architecture: {machine}')
+    target=release/f'DevotionFlow-0.2.3-macos-{arch}.dmg'
     subprocess.run(['hdiutil','create','-ov','-volname','DevotionFlow','-srcfolder',str(staging),
                     '-format','UDZO',str(target)],check=True)
 checksums=[]

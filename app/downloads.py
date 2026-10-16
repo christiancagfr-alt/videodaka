@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse,parse_qs,quote
 from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import QDialog,QVBoxLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QTextEdit,QFileDialog,QComboBox,QCheckBox,QDialogButtonBox,QMessageBox
-from .security import safe_error
+from .security import safe_error,is_youtube_video_url
 
 def find_ffmpeg(configured='',which=None):
     """Return a usable FFmpeg file path from settings, PATH or common install links."""
@@ -127,6 +127,8 @@ class DownloadDialog(QDialog):
         self.url.setText(url); self.start(False)
     def download_current(self,url):
         """Start a user-requested download, allowing a retry after a prior attempt finishes."""
+        if not is_youtube_video_url(url):
+            self.report('请先在 YouTube 打开具体视频页面，再点击下载。'); return
         if self.process.state()==QProcess.NotRunning and self.install_process.state()==QProcess.NotRunning:
             self.seen.discard(url)
         self.queue_current(url)
@@ -150,6 +152,8 @@ class DownloadDialog(QDialog):
         if playlist:
             target=playlist_url(target)
             if not target: self.report('当前链接没有播放列表，请在 YouTube 中打开播放列表后重试。'); return
+        elif not is_youtube_video_url(target):
+            self.report('请先在 YouTube 打开具体视频页面，再点击下载。'); return
         ffmpeg=find_ffmpeg(self.owner.cfg.get('ffmpeg_path',''))
         if not ffmpeg:
             if self.owner.cfg.get('auto_install_ffmpeg',True): self.install_ffmpeg(target); return

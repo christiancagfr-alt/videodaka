@@ -6,11 +6,16 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from .security import private_directory,valid_video_id
 
+MIN_QUALIFYING_VIDEO_SECONDS=20*60
+MIN_WATCH_RATIO=.95
+DAILY_QUALIFIED_GOAL=2
+GROWTH_TO_MATURE_DAYS=365*2
+
 DEFAULTS = dict(operator='', mode='local', credentials='', log_id='', log_sheet='日志',
                 summary_id='', summary_sheet='10月', date_row=1, category_row=2,
                 name_col=1, first_person_row=5, reflection_header='认识', daily_goal=2,
                 monthly_goal=50, theme='sage', avatar='🌱', avatar_path='', sidebar_collapsed=False, mood='平静', categories=[],
-                download_dir='', download_quality='1080', ffmpeg_path='', watch_download=False, auto_install_ffmpeg=True,
+                download_dir='', download_quality='1080', ffmpeg_path='', watch_download=False, auto_install_ffmpeg=True, ad_block=True,
                 screenshot_dir='', screenshot_interval=0,
                 log_header_row=1, category_sheet='分类', category_col=1, oauth_client_file='',oauth_connected=False,oauth_email='')
 HEADERS = ['登记时间','登记人','视频标题','视频链接','视频总时长','观看时长','分类','个人观后感','完播率','记录ID']
@@ -60,15 +65,62 @@ class Store:
         today = date.today(); month = month or today.strftime('%Y-%m')
         rows = [r for r in self.records() if r['operator']==operator and r['mode']==mode]
         monthly = [r for r in rows if r['timestamp'].startswith(month)]
-        days = {}
+        qualified=[r for r in rows if is_qualified_record(r)]
+        days={}; reflections_by_day={}; all_by_day={}
+        for r in qualified:
+            key=r['timestamp'][:10]
+            all_by_day[key]=all_by_day.get(key,0)+1
+            if r['reflection'].strip(): reflections_by_day[key]=reflections_by_day.get(key,0)+1
         for r in monthly:
-            key = r['timestamp'][:10]
-            days[key] = days.get(key,0) + (r['ratio'] >= .95)
-        eligible = [r for r in rows if r['ratio'] >= .95]
-        gap = (today-date.fromisoformat(max(r['timestamp'][:10] for r in eligible))).days if eligible else 0
-        return dict(total=len(monthly), qualified=sum(r['ratio']>=.95 for r in monthly),
+            key=r['timestamp'][:10]
+            days[key]=days.get(key,0)+(1 if is_qualified_record(r) else 0)
+        goal_days={key:count>=DAILY_QUALIFIED_GOAL and reflections_by_day.get(key,0)>=1
+                   for key,count in days.items()}
+        # Two long, 95%-watched videos plus at least one reflection earn a full
+        # nutrition day. Partial days still grow slowly; short videos earn none.
+        credits={}
+        for key,count in all_by_day.items():
+            video_credit=min(count,DAILY_QUALIFIED_GOAL)/DAILY_QUALIFIED_GOAL
+            credits[key]=video_credit*(1.0 if reflections_by_day.get(key,0)>=1 else .5)
+        nutrition=sum(credits.values())
+        growth_days=max(0,nutrition)
+        level=growth_level(growth_days)
+        tree_size=growth_size(growth_days)
+        recent=sum(credits.get((today-timedelta(days=offset)).isoformat(),0) for offset in range(7))
+        health=round(min(100,recent/7*100))
+        return dict(total=len(monthly), qualified=sum(is_qualified_record(r) for r in monthly),
                     reflections=sum(bool(r['reflection'].strip()) for r in monthly), days=days,
-                    level=1+len(eligible)//5, health=max(0,100-max(0,gap-1)*15))
+                    goal_days=goal_days, level=level, health=health,
+                    nutrition_days=round(growth_days,2), age_years=round(growth_days/365,1),
+                    growth_size=tree_size, growth_percent=round(min(100,growth_days/GROWTH_TO_MATURE_DAYS*100),1))
+
+def is_qualified_record(record):
+    return (record.get('duration',0)>=MIN_QUALIFYING_VIDEO_SECONDS and
+            record.get('ratio',0)>=MIN_WATCH_RATIO)
+
+def growth_level(nutrition_days):
+    """Map 730 ideal nutrition days (two years) across five visible stages."""
+    if not isinstance(nutrition_days,(int,float)) or not math.isfinite(nutrition_days) or nutrition_days<0:
+        raise ValueError('成长养分必须是非负有限数值')
+    return min(5,1+int(min(nutrition_days,GROWTH_TO_MATURE_DAYS)*4/GROWTH_TO_MATURE_DAYS))
+
+def growth_stage(nutrition_days):
+    """Translate nourishment-backed biological age to a broad tree life stage."""
+    if not isinstance(nutrition_days,(int,float)) or not math.isfinite(nutrition_days) or nutrition_days<0:
+        raise ValueError('成长养分必须是非负有限数值')
+    if nutrition_days < 30: return '幼苗'
+    if nutrition_days < GROWTH_TO_MATURE_DAYS: return '树苗'
+    if nutrition_days < 10*365: return '青年树'
+    if nutrition_days < 80*365: return '成树'
+    return '古树'
+
+def growth_size(nutrition_days):
+    """Visual size grows to maturity in two nourished years and continues for decades."""
+    if not isinstance(nutrition_days,(int,float)) or not math.isfinite(nutrition_days) or nutrition_days<0:
+        raise ValueError('成长养分必须是非负有限数值')
+    mature=min(nutrition_days,GROWTH_TO_MATURE_DAYS)/GROWTH_TO_MATURE_DAYS
+    decades=1-math.exp(-max(0,nutrition_days-GROWTH_TO_MATURE_DAYS)/(365*45))
+    return round(.3+.7*mature+1.3*decades,3)
 
 class Tracker:
     """Unique played intervals per viewing session; seeks and repeated segments do not inflate coverage."""
