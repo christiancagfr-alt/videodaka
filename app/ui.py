@@ -18,7 +18,7 @@ from .core import (Store,Tracker,DEFAULTS,MIN_QUALIFYING_VIDEO_SECONDS,
 from .sync import sync_pending,sync_status_message,GoogleSheets
 from .downloads import DownloadDialog
 from .capture import CAPTURE_VIDEO_RECT_SCRIPT,seek_video_script
-from .security import safe_error,is_youtube_url,validate_sample,valid_video_id
+from .security import safe_error,is_youtube_url,is_youtube_video_url,validate_sample,valid_video_id
 from .adblock import AD_HOSTS,YouTubeAdBlocker,normalize_ad_domains,youtube_adblock_injection_source
 
 _BACKGROUND_WORKERS=set()
@@ -363,7 +363,7 @@ class Window(QMainWindow):
         self.category=QComboBox(); self.category.setEditable(True); form.addWidget(QLabel('视频分类')); form.addWidget(self.category)
         refresh=QPushButton('读取在线历史分类'); refresh.clicked.connect(self.categories); form.addWidget(refresh); self.category_refresh_button=refresh
         self.reflection=QTextEdit(); self.reflection.setPlaceholderText('今天有哪些触动？记录你的认识与感想（选填）'); form.addWidget(self.reflection)
-        self.submit=QPushButton('确认登记并同步表格'); self.submit.setMinimumHeight(46); self.submit.clicked.connect(self.register); form.addWidget(self.submit)
+        self.submit=QPushButton(self.registration_button_text()); self.submit.setMinimumHeight(46); self.submit.clicked.connect(self.register); form.addWidget(self.submit)
         reset=QPushButton('开始新一轮观看'); reset.clicked.connect(self.new_round); form.addWidget(reset)
         self.status=QLabel('登记后先保存本地，再同步。'); self.status.setWordWrap(True); form.addWidget(self.status); form.addStretch()
         habit=QWidget(); hl=QVBoxLayout(habit); tabs.addTab(habit,'成长看板')
@@ -396,7 +396,8 @@ class Window(QMainWindow):
         actions=QHBoxLayout(); self.submit.setObjectName('primary'); actions.addWidget(self.submit,1); actions.addWidget(reset); jl.addLayout(actions); jl.addWidget(self.status); ll.addWidget(journal)
         self.browser.setMinimumHeight(300); ll.setStretch(1,1)
         split.setSizes([790,610]); dashboard.setMinimumWidth(560); self.resize(1480,960)
-        self.browser.loadStarted.connect(lambda:self.browser_status.setText('正在加载 YouTube…'))
+        self._probe_pending=False
+        self.browser.loadStarted.connect(self.loading_started)
         self.browser.loadFinished.connect(self.loaded)
         self.browser_status=QLabel('内嵌 YouTube · 可搜索、登录及播放'); ll.insertWidget(1,self.browser_status)
         self.build_pages(layout,bar,split,left,ll,nav,journal,jl,dashboard,analysis,goals,brand)
@@ -829,6 +830,31 @@ class Window(QMainWindow):
     def open_youtube(self):
         self.save_draft()
         self.tracker=Tracker(); self.submit.setEnabled(False); self.browser.setUrl(QUrl('https://www.youtube.com/?hl=zh-CN'))
+    def registration_button_text(self):
+        return '确认登记并同步表格' if self.cfg.get('mode')=='google' else '确认登记并保存本地记录'
+    def loading_started(self):
+        # A navigation can discard a pending JavaScript callback. Reset here so
+        # the new page is still probed, while keeping at most one request/page.
+        self._probe_pending=False
+        self.browser_status.setText('正在加载 YouTube…')
+        self.submit.setEnabled(False)
+    def current_page_video_id(self):
+        url=self.browser.url().toString()
+        if not is_youtube_video_url(url): return ''
+        from urllib.parse import parse_qs,urlsplit
+        parsed=urlsplit(url)
+        if parsed.path=='/watch':
+            values=parse_qs(parsed.query).get('v',[])
+            return values[0] if len(values)==1 else ''
+        parts=parsed.path.split('/')
+        return parts[2] if len(parts)==3 and parts[1]=='shorts' else ''
+    def current_video_is_registerable(self):
+        t=self.tracker
+        if t.video=='local-demo': return self.cfg.get('mode')=='local' and t.duration>0
+        page_video=self.current_page_video_id()
+        return bool(page_video and page_video==t.video and t.duration>0)
+    def update_registration_enabled(self):
+        self.submit.setEnabled(self.current_video_is_registerable() and not self.tracker.registered)
     def toggle_theme(self):
         order=['sage','rose','dark']; self.cfg['theme']=order[(order.index(self.cfg['theme'])+1)%len(order)] if self.cfg['theme'] in order else 'sage'; self.store.save_config(self.cfg); self.apply_theme()
         self.settings_page.fields['theme'].setCurrentIndex(max(0,self.settings_page.fields['theme'].findData(self.cfg['theme'])))
@@ -847,7 +873,14 @@ class Window(QMainWindow):
     def poll(self):
         if self.tracker.video=='local-demo' and self.browser.url().scheme() not in ('http','https'): return
         if not is_youtube_url(self.browser.url().toString()): self.submit.setEnabled(False); return
-        self.browser.page().runJavaScript(self.probe,self.receive)
+        if self.tracker.video!='local-demo' and self.current_page_video_id()!=self.tracker.video:
+            self.submit.setEnabled(False)
+        if self._probe_pending: return
+        self._probe_pending=True
+        self.browser.page().runJavaScript(self.probe,self.probe_finished)
+    def probe_finished(self,result):
+        self._probe_pending=False
+        self.receive(result)
     def receive(self,result):
         try:
             data=json.loads(result) if result else None
@@ -855,7 +888,7 @@ class Window(QMainWindow):
             data=validate_sample(data)
             if data and data['id']!=self.tracker.video:
                 self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False)
-                self.completion_confirm_checkbox.setVisible(False); self.submit.setText('确认登记并同步表格')
+                self.completion_confirm_checkbox.setVisible(False); self.submit.setText(self.registration_button_text())
                 self.save_draft(); self.restore_draft(data['id'])
             if data and self.resume_position is not None:
                 position=self.resume_position
@@ -864,35 +897,36 @@ class Window(QMainWindow):
                     self.browser.page().runJavaScript(seek_video_script(position))
                 return
             self.tracker.sample(data)
-            if data: self.show_tracking()
+            if data or self.current_video_is_registerable(): self.show_tracking()
             if data and self.cfg.get('watch_download'):
                 self.download_dialog.queue_current('https://www.youtube.com/watch?v='+data['id'])
-            elif self.tracker.video!='local-demo': self.submit.setEnabled(False); self.update_avatar_status()
-        except (ValueError,TypeError,KeyError): self.submit.setEnabled(False)
+            else: self.update_avatar_status()
+        except (ValueError,TypeError,KeyError):
+            self.update_registration_enabled()
     def show_tracking(self):
         t=self.tracker; ratio=t.watched/t.duration if t.duration else 0
         self.title.setText(t.title); self.progress.setValue(int(ratio*100)); n=sum(r['url'].endswith(t.video) for r in self.store.records())
         qualification='合格长视频' if t.duration>=MIN_QUALIFYING_VIDEO_SECONDS else '短视频仅登记、不计成长养分'
-        self.metrics.setText(f'观看 {t.watched:.1f} / {t.duration:.1f} 秒 · {ratio:.1%}\n已登记 {n} 次 · {qualification}需观看≥{MIN_WATCH_RATIO:.0%}'); self.submit.setEnabled(t.duration>0)
-        self.submit.setEnabled(t.duration>0 and not t.registered)
+        self.metrics.setText(f'观看 {t.watched:.1f} / {t.duration:.1f} 秒 · {ratio:.1%}\n已登记 {n} 次 · {qualification}需观看≥{MIN_WATCH_RATIO:.0%}')
+        self.update_registration_enabled()
         needs_confirmation=bool(t.duration>0 and ratio<MIN_WATCH_RATIO and not t.registered)
         self.completion_confirm_checkbox.setVisible(needs_confirmation)
         if needs_confirmation:
             self.submit.setText('确认达标并登记' if self.completion_confirm_checkbox.isChecked() else '按未达标登记')
             self.completion_confirm_checkbox.setToolTip(f'软件当前记录 {ratio:.1%}。如果你从上次记忆点续播、实际已经看满 95%，请勾选；否则直接登记会保留为未达标。检测时长始终如实保存。')
         else:
-            self.submit.setText('确认登记并同步表格')
+            self.submit.setText(self.registration_button_text())
         self.update_avatar_status()
         if t.can_auto_register(self.cfg['operator'],self.category.currentText()): self.register(automatic=True)
         elif ratio>=MIN_WATCH_RATIO and not t.registered and t.video!='local-demo':
             self.status.setText('短视频达到观看门槛，将正常登记但不计成长养分。' if t.duration<MIN_QUALIFYING_VIDEO_SECONDS else '已达到观看门槛，填写登记人和分类后将自动登记。')
     def new_round(self):
         self.tracker.reset(); self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False)
-        self.completion_confirm_checkbox.setVisible(False); self.submit.setText('确认登记并同步表格')
+        self.completion_confirm_checkbox.setVisible(False); self.submit.setText(self.registration_button_text())
         self.save_draft(); self.show_tracking(); self.status.setText('已开始新一轮，请从视频开头播放。')
     def manual_confirmation_changed(self,checked):
         ratio=self.tracker.watched/self.tracker.duration if self.tracker.duration else 0
-        self.submit.setText('确认达标并登记' if checked else ('按未达标登记' if ratio<MIN_WATCH_RATIO else '确认登记并同步表格'))
+        self.submit.setText('确认达标并登记' if checked else ('按未达标登记' if ratio<MIN_WATCH_RATIO else self.registration_button_text()))
     def settings(self):
         self.select_page(3)
     def save_mood(self,value):
@@ -901,6 +935,10 @@ class Window(QMainWindow):
     def register(self,checked=False,automatic=False):
         t=self.tracker
         if t.registered: return
+        if not self.current_video_is_registerable():
+            self.status.setText('尚未检测到当前视频的有效时长，请等视频信息加载后再登记。')
+            self.update_registration_enabled()
+            return
         if t.video=='local-demo' and self.cfg['mode']!='local': QMessageBox.warning(self,'演示数据','请先在设置中切换为 local 模式。'); return
         completion_confirmed=False
         ratio=t.watched/t.duration if t.duration else 0
@@ -910,12 +948,15 @@ class Window(QMainWindow):
             self.store.add(dict(session_id=t.round_id,operator=self.cfg['operator'],title=t.title,url='https://www.youtube.com/watch?v='+t.video,duration=t.duration,watched=t.watched,category=self.category.currentText().strip(),reflection=self.reflection.toPlainText().strip(),completion_confirmed=completion_confirmed),self.cfg)
         except ValueError as e: QMessageBox.warning(self,'无法登记',str(e)); return
         t.registered=True
-        self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False); self.completion_confirm_checkbox.setVisible(False); self.submit.setText('确认登记并同步表格')
+        self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False); self.completion_confirm_checkbox.setVisible(False); self.submit.setText(self.registration_button_text())
         self.save_draft()
         self.reflection.clear(); self.refresh(); self.submit.setEnabled(False)
         confirmation='（已按你的确认计入达标，实际计时仍单独保留）' if completion_confirmed else ''
         underqualified='（本软件记录低于 95%，已保存为未达标观看记录）' if ratio<MIN_WATCH_RATIO and not completion_confirmed and not automatic else ''
-        self.status.setText(('达到 95%，已自动登记。' if automatic else '已登记。'+confirmation+underqualified)+'本轮不会重复提交；再次观看请点击“开始新一轮观看”。'); self.sync()
+        saved='达到 95%，已自动登记。' if automatic else '登记已保存到本地。'+confirmation+underqualified
+        if self.cfg.get('mode')=='google': saved+=' 正在同步 Google Sheets。'
+        self.status.setText(saved+'本轮不会重复提交；再次观看请点击“开始新一轮观看”。')
+        self.sync(manual=not automatic)
     def sync(self,manual=False):
         self._sync_manual_requested=self._sync_manual_requested or manual
         if self.worker and self.worker.isRunning(): return
@@ -925,7 +966,9 @@ class Window(QMainWindow):
         manual=self._sync_manual_requested; self._sync_manual_requested=False
         # Periodic retry is deliberately quiet: background errors remain in
         # the history details, while the journal panel stays focused on use.
-        message=sync_status_message(ok,value,manual)
+        if manual and self.cfg.get('mode')=='local':
+            message='登记已保存在本地记录中；本地模式不会写入 Google Sheets。'
+        else: message=sync_status_message(ok,value,manual)
         if message: self.status.setText(message)
         self.refresh()
     def categories(self):

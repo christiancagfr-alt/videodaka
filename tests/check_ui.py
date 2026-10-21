@@ -5,6 +5,7 @@ from unittest.mock import patch
 from PySide6.QtWidgets import QApplication,QPushButton
 from PySide6.QtGui import QPixmap,QColor,QWheelEvent
 from PySide6.QtCore import Qt,QPointF,QPoint,QEventLoop,QTimer,QUrl
+from PySide6.QtTest import QTest
 from app.ui import Window
 from app.capture import CAPTURE_VIDEO_RECT_SCRIPT
 
@@ -12,7 +13,7 @@ app=QApplication([])
 with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     root=Path(directory)
     window=Window(root,offline=True)
-    window.timer.stop(); window.retry.stop(); window.sync=lambda:None
+    window.timer.stop(); window.retry.stop(); window.sync=lambda *args,**kwargs:None
     assert window.ad_blocker.enabled and 'ad_block' in window.settings_page.fields
     assert window.youtube_adblock_script is not None
     assert window.profile.scripts().find('DevotionFlow YoutubeAdblock 0.8.2')
@@ -43,21 +44,33 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     assert 'manual.ads.example' in window.ad_blocker.extra_domains
     window.cfg['operator']='测试'; window.category.setCurrentText('电影')
     tracker=window.tracker; tracker.video='test'; tracker.title='测试视频'; tracker.duration=100; tracker.intervals=[(0,95)]
-    window.show_tracking(); window.show_tracking()
+    with patch.object(window,'current_page_video_id',return_value='test'):
+        window.show_tracking(); window.show_tracking()
     assert len(window.store.records())==1 and tracker.registered
     assert window.playback_history.rowCount()==1 and window.registration_history.rowCount()==1
     assert window.registration_history.item(0,1).text()=='测试视频'
-    window.new_round(); tracker.intervals=[(0,95)]; window.show_tracking()
+    window.new_round(); tracker.intervals=[(0,95)]
+    with patch.object(window,'current_page_video_id',return_value='test'):
+        window.show_tracking()
     assert len(window.store.records())==2
     window.new_round(); tracker=window.tracker; tracker.intervals=[(0,42)]; tracker.position=55
     window.reflection.setPlainText('保留草稿'); window.category.setCurrentText('诗歌'); window.save_draft()
     window.restore_draft('test'); assert window.tracker.watched==42 and window.resume_position==55
     assert window.reflection.toPlainText()=='保留草稿' and window.category.currentText()=='诗歌'
     window.new_round(); tracker=window.tracker; tracker.video='abcdefghijk'; tracker.title='记忆点续播测试'; tracker.duration=1800; tracker.intervals=[(0,22.7)]
-    window.category.setCurrentText('诗歌'); window.show_tracking(); assert window.submit.isEnabled()
-    assert not window.completion_confirm_checkbox.isHidden()
-    previous_count=len(window.store.records())
-    window.completion_confirm_checkbox.setChecked(True); window.submit.click()
+    window.category.setCurrentText('诗歌')
+    with patch.object(window,'current_page_video_id',return_value='abcdefghijk'):
+        window.show_tracking(); assert window.submit.isEnabled()
+        assert not window.completion_confirm_checkbox.isHidden()
+        # A slow YouTube page must not accumulate overlapping probe scripts.
+        with patch('app.ui.is_youtube_url',return_value=True), patch.object(window.browser.page(),'runJavaScript') as run_probe:
+            window.poll(); window.poll(); assert run_probe.call_count==1 and window._probe_pending
+            window.probe_finished(None)
+            assert not window._probe_pending and window.submit.isEnabled()
+        # The submit button must respond to a physical-style click in the UI.
+        previous_count=len(window.store.records())
+        window.completion_confirm_checkbox.setChecked(True); window.show(); app.processEvents()
+        QTest.mouseClick(window.submit,Qt.LeftButton); app.processEvents()
     assert len(window.store.records())==previous_count+1
     confirmed=window.store.records()[0]
     assert confirmed['completion_confirmed'] and confirmed['ratio']<.95 and confirmed['watched']<1800
