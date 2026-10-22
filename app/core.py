@@ -16,6 +16,7 @@ DEFAULTS = dict(operator='', mode='local', credentials='', log_id='', log_sheet=
                 name_col=1, first_person_row=5, reflection_header='认识', daily_goal=2,
                 monthly_goal=50, theme='sage', avatar='🌱', avatar_path='', sidebar_collapsed=False, mood='平静', categories=[],
                 download_dir='', download_quality='1080', ffmpeg_path='', watch_download=False, auto_install_ffmpeg=True, ad_block=True,
+                ad_block_page_script=True,
                 ad_domains=[],
                 screenshot_dir='', screenshot_interval=0,
                 log_header_row=1, category_sheet='分类', category_col=1, oauth_client_file='',oauth_connected=False,oauth_email='')
@@ -42,7 +43,15 @@ class Store:
         return bool(self.db.execute('SELECT 1 FROM records WHERE id=?',(record_id,)).fetchone())
     def config(self):
         p = self.root / 'settings.json'
-        return DEFAULTS | (json.loads(p.read_text('utf-8')) if p.exists() else {})
+        cfg = DEFAULTS | (json.loads(p.read_text('utf-8')) if p.exists() else {})
+        # 0.2.10 introduced the optional page script disabled by default.
+        # Migrate that release's implicit default once so existing users keep
+        # the video-ad filtering they had before; users can still turn it off.
+        if not cfg.get('ad_block_page_script_compat_migrated'):
+            if cfg.get('ad_block', True): cfg['ad_block_page_script'] = True
+            cfg['ad_block_page_script_compat_migrated'] = True
+            self.save_config(cfg)
+        return cfg
     def save_config(self, cfg):
         p = self.root / 'settings.tmp'
         p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), 'utf-8')
@@ -126,9 +135,9 @@ def growth_size(nutrition_days):
 class Tracker:
     """Unique played intervals per viewing session; seeks and repeated segments do not inflate coverage."""
     def __init__(self):
-        self.video=''; self.title=''; self.duration=0.; self.intervals=[]; self.last=None; self.registered=False; self.round_id=str(uuid.uuid4()); self.position=0
+        self.video=''; self.title=''; self.duration=0.; self.intervals=[]; self.last=None; self.registered=False; self.round_id=str(uuid.uuid4()); self.position=0; self.ad_showing=False
     def reset(self):
-        self.intervals=[]; self.last=None; self.registered=False; self.round_id=str(uuid.uuid4()); self.position=0
+        self.intervals=[]; self.last=None; self.registered=False; self.round_id=str(uuid.uuid4()); self.position=0; self.ad_showing=False
     def snapshot(self):
         return dict(video=self.video,title=self.title,duration=self.duration,intervals=self.intervals,registered=self.registered,round_id=self.round_id,position=self.position)
     def restore(self,value):
@@ -159,6 +168,7 @@ class Tracker:
             self.video=s['id']; self.reset()
         self.title=s.get('title',''); self.duration=float(s.get('duration',0))
         if not math.isfinite(self.duration): self.duration=0
+        self.ad_showing=bool(s.get('adShowing',False))
         p=float(s['position']); now=float(s['clock'])
         if self.last and self.duration > 0:
             old=self.last; dt=(now-old['clock'])/1000; delta=p-old['position']
@@ -169,7 +179,7 @@ class Tracker:
                     if merged and a<=merged[-1][1]: merged[-1]=(merged[-1][0],max(b,merged[-1][1]))
                     else: merged.append((a,b))
                 self.intervals=merged
-        self.last=s
+        self.last=None if self.ad_showing else s
         self.position=p
 
 def day_value(v):

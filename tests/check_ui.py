@@ -16,8 +16,12 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     window.timer.stop(); window.retry.stop(); window.sync=lambda *args,**kwargs:None
     assert window.ad_blocker.enabled and 'ad_block' in window.settings_page.fields
     assert window.youtube_adblock_script is not None
+    assert window.ad_blocker.enabled
+    assert 'ad_block_page_script' in window.settings_page.fields
     assert window.profile.scripts().find('DevotionFlow YoutubeAdblock 0.8.2')
     assert not hasattr(window,'extension_manager')
+    assert "!video || !id || document.querySelector('.ad-showing')" not in window.probe
+    assert 'adShowing' in window.probe and 'playing:!adShowing' in window.probe
     assert 'ad_domains' in window.settings_page.fields
     assert 'doubleclick.net' in window.settings_page.fields['ad_domains'].toPlainText()
     assert 'tanx.com' in window.settings_page.fields['ad_domains'].toPlainText()
@@ -31,12 +35,16 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     assert window.calendar.day_colors[0]=='#65b885'
     window.cfg['theme']='sage'; window.apply_theme()
     assert all(button.text()!='检查软件更新' for button in window.settings_page.findChildren(QPushButton))
+    window.settings_page.fields['ad_block_page_script'].setChecked(True); window.save_settings_page()
+    assert window.youtube_adblock_script is not None
+    window.settings_page.fields['ad_block_page_script'].setChecked(False); window.save_settings_page()
+    assert window.youtube_adblock_script is None
     window.settings_page.fields['ad_block'].setChecked(False); window.save_settings_page()
     assert not window.ad_blocker.enabled
     assert window.youtube_adblock_script is None
     window.settings_page.fields['ad_block'].setChecked(True); window.save_settings_page()
     assert window.ad_blocker.enabled
-    assert window.youtube_adblock_script is not None
+    assert window.youtube_adblock_script is None
     window.settings_page.fields['ad_domains'].appendPlainText('manual.ads.example')
     window.save_settings_page()
     assert 'manual.ads.example' in window.cfg['ad_domains']
@@ -62,6 +70,15 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     with patch.object(window,'current_page_video_id',return_value='abcdefghijk'):
         window.show_tracking(); assert window.submit.isEnabled()
         assert not window.completion_confirm_checkbox.isHidden()
+        window.resume_position=None
+        ad_sample=json.dumps(dict(id='abcdefghijk',title='广告期视频',duration=1800,position=0,
+            clock=1000,playing=False,seeking=False,rate=1,adShowing=True))
+        with patch.object(window,'current_page_video_id',return_value='abcdefghijk'), patch('app.ui.is_youtube_url',return_value=True):
+            window.receive(ad_sample)
+        assert window.tracker.video=='abcdefghijk' and window.tracker.ad_showing
+        assert window.tracker.watched==22.7 and window.submit.isEnabled()
+        assert '广告时段不计入' in window.metrics.text()
+        assert '广告时段不会计入' in window.status.text()
         # A slow YouTube page must not accumulate overlapping probe scripts.
         with patch('app.ui.is_youtube_url',return_value=True), patch.object(window.browser.page(),'runJavaScript') as run_probe:
             window.poll(); window.poll(); assert run_probe.call_count==1 and window._probe_pending

@@ -156,6 +156,9 @@ class SecurityTests(unittest.TestCase):
         self.assertIn("window.GM_getValue",source)
         self.assertIn('Cross-origin GM_xmlhttpRequest is intentionally unavailable',source)
         self.assertIn('window.GM_xmlhttpRequest = undefined',source)
+        self.assertIn('compatibilityOverrides',source)
+        self.assertIn('timerNeutralization:false',source)
+        self.assertIn('fetchIntercept:true',source)
 
     def test_oauth_secret_store_uses_native_platform_backend(self):
         backend=_store().get_keyring()

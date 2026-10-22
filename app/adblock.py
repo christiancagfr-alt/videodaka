@@ -99,6 +99,25 @@ def youtube_adblock_injection_source():
     shim=r'''(() => {
  if (!['www.youtube.com','youtube.com','m.youtube.com','music.youtube.com','tv.youtube.com','www.youtube-nocookie.com','youtubekids.com','www.youtubekids.com'].includes(location.hostname)) return;
  const key = name => '__devotionflow_yab_v082_' + String(name);
+ // Keep the upstream network/data filters, but turn off hooks that replace
+ // native timers, service workers, webpack modules, or player state. These
+ // aggressive hooks are brittle in QtWebEngine and can make controls inert.
+ try {
+   const settingKey = key('feature_overrides');
+   const stored = JSON.parse(localStorage.getItem(settingKey) || '{}');
+   const compatibilityOverrides = {
+     jsonParsePrune:true, fetchIntercept:true, xhrIntercept:true,
+     requestBodyModify:true, cosmeticHiding:true, shortsAdBlock:true,
+     setUndefinedTraps:false, domBypassPrevention:false,
+     timerNeutralization:false, aggressiveAntiStall:false,
+     videoAdFastForward:false, nativeToStringMask:false,
+     serviceWorkerBlock:false, webpackChunkHook:false
+   };
+   localStorage.setItem(settingKey, JSON.stringify({
+     ...(stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}),
+     ...compatibilityOverrides
+   }));
+ } catch (_) {}
  window.GM_getValue = (name, fallback) => {
    try { const value = localStorage.getItem(key(name)); return value === null ? fallback : JSON.parse(value); }
    catch (_) { return fallback; }

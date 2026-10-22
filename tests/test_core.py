@@ -194,6 +194,22 @@ class Tests(unittest.TestCase):
             other.add(record,self.cfg); other.add(record,self.cfg)
             self.assertEqual(len(other.records()),1); self.assertTrue(other.has_record(restored.round_id))
         finally: other.db.close()
+    def test_ad_samples_keep_video_identity_without_crediting_ad_time(self):
+        tracker=Tracker()
+        tracker.sample(dict(id='adtest',title='正片标题',duration=1800,position=0,clock=1000,
+            playing=False,seeking=False,rate=1,adShowing=True))
+        self.assertEqual(tracker.video,'adtest')
+        self.assertEqual(tracker.duration,1800)
+        self.assertTrue(tracker.ad_showing)
+        tracker.sample(dict(id='adtest',title='正片标题',duration=1800,position=10,clock=2000,
+            playing=True,seeking=False,rate=16,adShowing=True))
+        self.assertEqual(tracker.watched,0)
+        tracker.sample(dict(id='adtest',title='正片标题',duration=1800,position=10,clock=3000,
+            playing=True,seeking=False,rate=1,adShowing=False))
+        tracker.sample(dict(id='adtest',title='正片标题',duration=1800,position=11,clock=4000,
+            playing=True,seeking=False,rate=1,adShowing=False))
+        self.assertEqual(tracker.watched,1)
+        self.assertFalse(tracker.ad_showing)
     def test_download_options_and_playlist(self):
         from app.downloads import download_arguments,playlist_url
         url='https://www.youtube.com/watch?v=abc&list=PL123'
@@ -210,6 +226,13 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError): locate(values,cfg,r)
     def test_config_snapshot_and_mode_isolation(self):
         self.record(); self.cfg['mode']='google'; self.assertEqual(self.store.records()[0]['mode'],'local'); self.assertEqual(self.store.stats('测试者','google')['total'],0)
+    def test_page_adblock_compatibility_migrates_once(self):
+        self.store.save_config(DEFAULTS|{'ad_block':True,'ad_block_page_script':False})
+        migrated=self.store.config()
+        self.assertTrue(migrated['ad_block_page_script'])
+        self.assertTrue(migrated['ad_block_page_script_compat_migrated'])
+        migrated['ad_block_page_script']=False; self.store.save_config(migrated)
+        self.assertFalse(self.store.config()['ad_block_page_script'])
     def test_real_sample_mapping(self):
         import openpyxl
         path=Path(__file__).resolve().parents[1]/'视频数据表.xlsx'
