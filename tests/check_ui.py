@@ -57,6 +57,25 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     assert len(window.store.records())==1 and tracker.registered
     assert window.playback_history.rowCount()==1 and window.registration_history.rowCount()==1
     assert window.registration_history.item(0,1).text()=='测试视频'
+    retry_buttons=[button for button in window.registration_history_page.findChildren(QPushButton)
+                   if button.text()=='按当前设置重新登记失败记录']
+    assert len(retry_buttons)==1
+    with patch.object(window,'sync') as retry_sync:
+        window.cfg['mode']='google'
+        window.retry_failed_records()
+        retry_sync.assert_not_called()
+        with window.store.db:
+            row=window.store.db.execute('SELECT id,config FROM records LIMIT 1').fetchone()
+            record_cfg=json.loads(row['config']); record_cfg['mode']='google'
+            window.store.db.execute("UPDATE records SET config=?,error='日期匹配失败' WHERE id=?",
+                                    (json.dumps(record_cfg),row['id']))
+        retry_buttons[0].click()
+        retry_sync.assert_called_once_with(manual=True,retry_cfg=window.cfg)
+        with window.store.db:
+            record_cfg['mode']='local'
+            window.store.db.execute("UPDATE records SET config=?,error='' WHERE id=?",
+                                    (json.dumps(record_cfg),row['id']))
+        window.cfg['mode']='local'
     window.new_round(); tracker.intervals=[(0,95)]
     with patch.object(window,'current_page_video_id',return_value='test'):
         window.show_tracking()

@@ -69,6 +69,26 @@ class Store:
         return record
     def records(self):
         return [dict(json.loads(r['payload']), status=r['status'], error=r['error'], mode=json.loads(r['config'])['mode']) for r in self.db.execute('SELECT * FROM records ORDER BY rowid DESC')]
+    def remap_failed_records(self, cfg):
+        """Explicitly retarget failed online records, retaining identity and payload."""
+        if cfg.get('mode')!='google':
+            raise ValueError('请先在设置中选择 google 模式并保存正确的表格配置。')
+        keys=('log_id','log_sheet','log_header_row','summary_id','summary_sheet',
+              'date_row','category_row','name_col','first_person_row','reflection_header',
+              'credentials','oauth_client_file')
+        current=DEFAULTS | cfg
+        if any(not str(current[k]).strip() for k in ('log_id','log_sheet','summary_id','summary_sheet')):
+            raise ValueError('请先填写并保存日志表和汇总表的 ID、工作表名称。')
+        changed=0
+        with self.db:
+            for row in self.db.execute("SELECT id,config FROM records WHERE status='pending' AND error!=''").fetchall():
+                original=json.loads(row['config'])
+                if original.get('mode')!='google': continue
+                original.update({key:current[key] for key in keys})
+                self.db.execute('UPDATE records SET config=? WHERE id=?',
+                                (json.dumps(original,ensure_ascii=False),row['id']))
+                changed+=1
+        return changed
     def categories(self):
         return sorted({r['category'] for r in self.records()})
     def stats(self, operator, mode, month=None):
@@ -182,13 +202,19 @@ class Tracker:
         self.last=None if self.ad_showing else s
         self.position=p
 
-def day_value(v):
+def day_value(v, year=None):
     if isinstance(v, (int,float)): return (datetime(1899,12,30)+timedelta(days=v)).date().isoformat()
     if isinstance(v,(datetime,date)): return v.date().isoformat() if isinstance(v,datetime) else v.isoformat()
     s=str(v).strip()
     for fmt in ('%Y-%m-%d','%Y/%m/%d','%m/%d/%Y','%Y年%m月%d日'):
         try: return datetime.strptime(s,fmt).date().isoformat()
         except ValueError: pass
+    # Yearless month/day headers belong to the record's year, including retries.
+    # Keep explicit years intact and validate leap days in the actual target year.
+    if year is not None:
+        for fmt in ('%Y-%m-%d','%Y-%m/%d','%Y-%m月%d日'):
+            try: return datetime.strptime(f'{year}-{s}',fmt).date().isoformat()
+            except ValueError: pass
     return None
 
 def locate(values,cfg,record):
@@ -199,7 +225,7 @@ def locate(values,cfg,record):
     width=max(map(len,values),default=0)
     for c in range(1,width+1):
         raw=cell(cfg['date_row'],c)
-        if raw!='' and raw is not None: current=day_value(raw)
+        if raw!='' and raw is not None: current=day_value(raw,year=int(record['timestamp'][:4]))
         if current==record['timestamp'][:10]:
             label=str(cell(cfg['category_row'],c)).strip()
             if label==record['category']: counts.append(c)

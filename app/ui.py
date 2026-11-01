@@ -68,10 +68,11 @@ def avatar_image(pixmap,size=256,circular=False):
 
 class Worker(QThread):
     result=Signal(object)
-    def __init__(self,root,cfg=None): super().__init__(); self.root=root; self.cfg=cfg
+    def __init__(self,root,cfg=None,retry_cfg=None): super().__init__(); self.root=root; self.cfg=cfg; self.retry_cfg=retry_cfg
     def run(self):
         store=Store(self.root)
         try:
+            if self.retry_cfg is not None: store.remap_failed_records(self.retry_cfg)
             result=GoogleSheets(self.cfg).categories(self.cfg) if self.cfg else sync_pending(store)
             self.result.emit((True,result))
         except Exception as e: self.result.emit((False,safe_error(e)))
@@ -112,7 +113,7 @@ class Settings(QDialog):
             back=QPushButton('← 返回播放与登记'); back.setObjectName('secondary'); back.clicked.connect(lambda:parent.select_page(0)); layout.addWidget(back); self.back_to_player=back
         else: self.back_to_player=None
         scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); form=QFormLayout(body); scroll.setWidget(body); layout.addWidget(scroll)
-        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','ad_block':'YouTube 广告拦截','ad_block_page_script':'启用 YouTube 网页级拦截脚本（可能影响交互）','ad_domains':'本地广告域名','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
+        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期或月日）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','ad_block':'YouTube 广告拦截','ad_block_page_script':'启用 YouTube 网页级拦截脚本（可能影响交互）','ad_domains':'本地广告域名','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
         for k,label in labels.items():
             if k=='avatar': k='avatar_path'; label='头像图片'
             sections={'operator':'登记人设置','credentials':'Google 账号连接','log_id':'谷歌表格绑定','date_row':'表格字段映射','daily_goal':'日历与成长目标','theme':'外观与个人资料','ad_block':'浏览体验','watch_download':'下载设置','log_header_row':'日志与分类字段映射'}
@@ -661,6 +662,10 @@ class Window(QMainWindow):
     def history_page(self,title,description,registration):
         page=QWidget(); layout=QVBoxLayout(page); heading=QLabel(title); heading.setObjectName('heading'); layout.addWidget(heading)
         note=QLabel(description); note.setWordWrap(True); layout.addWidget(note)
+        if registration:
+            retry=QPushButton('按当前设置重新登记失败记录')
+            retry.setToolTip('对所有登记人失败的在线记录使用已保存的表格设置重试，保留原日期、姓名、内容和记录 ID。')
+            retry.clicked.connect(self.retry_failed_records); layout.addWidget(retry)
         headers=['登记时间','视频标题','分类','观看比例','观看时长','视频链接']
         if registration: headers+=['完成确认','同步状态','错误信息']
         table=self.make_history_table(headers); table.cellDoubleClicked.connect(lambda row,col:self.open_table_video(table,row)); layout.addWidget(table)
@@ -978,10 +983,20 @@ class Window(QMainWindow):
         if self.cfg.get('mode')=='google': saved+=' 正在同步 Google Sheets。'
         self.status.setText(saved+'本轮不会重复提交；再次观看请点击“开始新一轮观看”。')
         self.sync(manual=not automatic)
-    def sync(self,manual=False):
+    def retry_failed_records(self):
+        if getattr(self,'worker',None) and self.worker.isRunning():
+            self.banner.setText('正在同步或读取分类，请完成后再重新登记。'); return
+        if self.cfg.get('mode')!='google':
+            self.banner.setText('请先在系统设置中选择 google 模式，并保存正确的表格配置。'); return
+        failed=[r for r in self.store.records() if r['mode']=='google' and r['status']=='pending' and r['error']]
+        if not failed:
+            self.banner.setText('没有需要重新登记的失败在线记录。'); return
+        self.banner.setText(f'正在按已保存的当前表格设置重新登记 {len(failed)} 条失败记录…')
+        self.sync(manual=True,retry_cfg=dict(self.cfg))
+    def sync(self,manual=False,retry_cfg=None):
         self._sync_manual_requested=self._sync_manual_requested or manual
         if self.worker and self.worker.isRunning(): return
-        self.worker=Worker(self.store.root); self.worker.result.connect(self.synced); self.worker.start()
+        self.worker=Worker(self.store.root,retry_cfg=retry_cfg); self.worker.result.connect(self.synced); self.worker.start()
     def synced(self,result):
         ok,value=result
         manual=self._sync_manual_requested; self._sync_manual_requested=False
@@ -990,7 +1005,9 @@ class Window(QMainWindow):
         if manual and self.cfg.get('mode')=='local':
             message='登记已保存在本地记录中；本地模式不会写入 Google Sheets。'
         else: message=sync_status_message(ok,value,manual)
-        if message: self.status.setText(message)
+        if message:
+            self.status.setText(message)
+            self.banner.setText(message)
         self.refresh()
     def categories(self):
         if self.cfg['mode']=='local': self.status.setText('本地模式使用本地历史分类，也可直接输入分类。'); return

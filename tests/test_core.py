@@ -226,6 +226,56 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError): locate(values,cfg,r)
     def test_config_snapshot_and_mode_isolation(self):
         self.record(); self.cfg['mode']='google'; self.assertEqual(self.store.records()[0]['mode'],'local'); self.assertEqual(self.store.stats('测试者','google')['total'],0)
+    def test_yearless_date_headers(self):
+        r=self.record() | {'timestamp':'2026-11-01T10:00:00+00:00'}
+        cfg=self.cfg | {'first_person_row':3}
+        for header in ('11-01','11-1','11/01','11月1日',' 11-01 '):
+            with self.subTest(header=header):
+                values=[['','11-02','',header,''],['姓名','电影','认识','电影','认识'],['测试者']]
+                self.assertEqual(locate(values,cfg,r),(3,4,5))
+        for header in ('2025-11-01','11-02','11-31','无效日期'):
+            with self.subTest(header=header):
+                with self.assertRaises(ValueError):
+                    locate([['',header,''],['姓名','电影','认识'],['测试者']],cfg,r)
+        with self.assertRaises(ValueError):
+            locate([['','11-01','','11-01',''],['姓名','电影','认识','电影','认识'],['测试者']],cfg,r)
+
+    def test_remap_failed_records_preserves_identity_and_skips_other_records(self):
+        import json
+        self.cfg.update(mode='google',summary_sheet='10月')
+        failed=self.record(); synced=self.record(); queued=self.record()
+        self.cfg['mode']='local'; local=self.record()
+        with self.store.db:
+            self.store.db.execute("UPDATE records SET error='旧错误' WHERE id IN (?,?)",(failed['id'],local['id']))
+            self.store.db.execute("UPDATE records SET status='synced' WHERE id=?",(synced['id'],))
+        before={row['id']:dict(row) for row in self.store.db.execute('SELECT * FROM records')}
+        current=DEFAULTS | dict(mode='google',operator='其他人',log_id='log',summary_id='summary',summary_sheet='11月')
+        self.assertEqual(self.store.remap_failed_records(current),1)
+        after={row['id']:dict(row) for row in self.store.db.execute('SELECT * FROM records')}
+        for record in (synced,queued,local): self.assertEqual(before[record['id']],after[record['id']])
+        updated=after[failed['id']]
+        self.assertEqual(updated['payload'],before[failed['id']]['payload'])
+        self.assertEqual(updated['status'],'pending')
+        self.assertEqual(json.loads(updated['config'])['summary_sheet'],'11月')
+        self.assertEqual(json.loads(updated['config'])['operator'],'测试者')
+        with patch('app.sync.GoogleSheets') as backend:
+            sync_pending(self.store)
+        args=backend.return_value.sync.call_args_list[0].args
+        self.assertEqual(args[0]['id'],failed['id'])
+        self.assertEqual(args[1]['summary_sheet'],'11月')
+        with self.assertRaises(ValueError): self.store.remap_failed_records(DEFAULTS)
+        with self.assertRaises(ValueError): self.store.remap_failed_records(current | {'summary_id':''})
+
+    def test_yearless_headers_use_record_year_and_validate_leap_days(self):
+        from app.core import day_value
+        self.assertEqual(day_value('02-29',2024),'2024-02-29')
+        self.assertIsNone(day_value('02-29',2026))
+        self.assertIsNone(day_value('11-01'))
+        self.assertEqual(day_value('2025-11-01',2026),'2025-11-01')
+        self.assertEqual(day_value(46327,2025),'2026-11-01')
+        r=self.record() | {'timestamp':'2024-02-29T10:00:00+00:00'}
+        self.assertEqual(locate([['','02-29',''],['姓名','电影','认识'],['测试者']],
+                                self.cfg | {'first_person_row':3},r),(3,2,3))
     def test_page_adblock_compatibility_migrates_once(self):
         self.store.save_config(DEFAULTS|{'ad_block':True,'ad_block_page_script':False})
         migrated=self.store.config()
