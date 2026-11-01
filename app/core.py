@@ -217,14 +217,20 @@ def day_value(v, year=None):
             except ValueError: pass
     return None
 
-def locate(values,cfg,record):
+def locate(values,cfg,record,date_merges=None):
     def cell(r,c): return values[r-1][c-1] if r<=len(values) and c<=len(values[r-1]) else ''
     rows=[r for r in range(cfg['first_person_row'],len(values)+1) if str(cell(r,cfg['name_col'])).strip()==record['operator'].strip()]
     if len(rows)!=1: raise ValueError('汇总表姓名缺失或重复，请检查姓名列与起始行')
-    current=None; counts=[]; notes=[]
+    current=None; counts=[]; notes=[]; merge_end=None
+    boundaries={m.get('startColumnIndex',0)+1:m['endColumnIndex'] for m in (date_merges or [])
+                if m.get('startRowIndex',0)<=cfg['date_row']-1<m['endRowIndex']}
     width=max(map(len,values),default=0)
     for c in range(1,width+1):
+        if merge_end is not None and c>merge_end:
+            current=None; merge_end=None
         raw=cell(cfg['date_row'],c)
+        if c in boundaries:
+            current=None; merge_end=boundaries[c]
         if raw!='' and raw is not None: current=day_value(raw,year=int(record['timestamp'][:4]))
         if current==record['timestamp'][:10]:
             label=str(cell(cfg['category_row'],c)).strip()

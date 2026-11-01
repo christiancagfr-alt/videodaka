@@ -57,7 +57,10 @@ class GoogleSheets:
         insert_latest_log_row(log,header,[mapping.get(h,'') for h in header],r['id'],cfg['log_header_row'])
         ws=self.sheet(cfg['summary_id'],cfg['summary_sheet'])
         values=ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
-        row,col,note_col=locate(values,cfg,r)
+        sheet_metadata=ws.spreadsheet.fetch_sheet_metadata()
+        date_merges=next((s.get('merges',[]) for s in sheet_metadata.get('sheets',[])
+                          if s.get('properties',{}).get('sheetId')==ws.id),[])
+        row,col,note_col=locate(values,cfg,r,date_merges=date_merges)
         a1=rowcol_to_a1(row,col)
         # Human-readable notes; retry IDs live in spreadsheet developer metadata.
         meta=ws.spreadsheet.fetch_sheet_metadata(params={'includeGridData':True,'ranges':f"'{ws.title.replace(chr(39),chr(39)*2)}'!{a1}"})
