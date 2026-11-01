@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import re
+import ssl
 import sys
 import tempfile
 from urllib.request import Request, urlopen
@@ -13,6 +14,15 @@ REPOSITORY = 'christiancagfr-alt/videodaka'
 RELEASES_PAGE = f'https://github.com/{REPOSITORY}/releases/latest'
 API_URL = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 MAX_INSTALLER_BYTES = 1_500_000_000
+
+
+def secure_urlopen(request, timeout):
+    # Packaged macOS Python may not have a usable default CA file. Add the
+    # bundled Mozilla roots while keeping system roots and TLS verification.
+    import certifi
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return urlopen(request, timeout=timeout, context=context)
 
 
 def version_tuple(value):
@@ -40,7 +50,7 @@ def latest_release(timeout=5, system=None, machine=None):
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'DevotionFlow-update-check',
     })
-    with urlopen(request, timeout=timeout) as response:
+    with secure_urlopen(request, timeout=timeout) as response:
         if response.status != 200:
             raise RuntimeError('GitHub 更新服务暂时不可用')
         data = json.loads(response.read(1024 * 1024 + 1))
@@ -98,7 +108,7 @@ def download_installer(release, destination_dir=None, timeout=30, opener=None):
     digest = hashlib.sha256()
     received = 0
     try:
-        with (opener or urlopen)(request, timeout=timeout) as response, os.fdopen(fd, 'wb') as output:
+        with (opener or secure_urlopen)(request, timeout=timeout) as response, os.fdopen(fd, 'wb') as output:
             final_url = response.geturl() if hasattr(response, 'geturl') else url
             if not final_url.startswith('https://') or not any(final_url.startswith(prefix) for prefix in (
                     'https://github.com/', 'https://release-assets.githubusercontent.com/',

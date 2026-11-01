@@ -21,6 +21,7 @@ for package in ('yt_dlp','yt_dlp_ejs','keyring'):
 for package in ('gspread','openpyxl','defusedxml','PySide6','yt-dlp','keyring','google-auth-oauthlib'):
     datas+=copy_metadata(package,recursive=True)
 datas+=collect_data_files('PySide6',includes=['**/LICENSE*','**/licenses/**'])
+datas+=collect_data_files('certifi',includes=['cacert.pem'])
 
 a=Analysis([str(root/'main.py')],pathex=[str(root)],binaries=binaries,datas=datas,
            hiddenimports=hiddenimports,excludes=['tkinter','pytest','pip'],noarchive=False)
