@@ -1,0 +1,41 @@
+name: Publish verified v0.2.14 installers
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-v0.2.14.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-v0.2.14
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Verify successful source build
+        run: |
+          test "$(gh api repos/$GH_REPO/actions/runs/43237936535 --jq .conclusion)" = success
+          test "$(gh api repos/$GH_REPO/actions/runs/43237936535 --jq .head_sha)" = 31a9fcd1684e76c0d9b87ff7354eae9e455317a6
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          run-id: 43237936535
+          pattern: DevotionFlow-*
+          path: installers
+          merge-multiple: true
+      - name: Verify and publish installers
+        working-directory: installers
+        run: |
+          test -s DevotionFlow-0.2.14-windows-x64-setup.exe
+          test -s DevotionFlow-0.2.14-macos-arm64.dmg
+          test -s DevotionFlow-0.2.14-macos-x64.dmg
+          sha256sum -c SHA256SUMS-*.txt
+          if gh release view v0.2.14 >/dev/null 2>&1; then
+            echo "Release already exists"; exit 0
+          fi
+          gh release create v0.2.14 ./*.exe ./*.dmg ./SHA256SUMS-*.txt --target 31a9fcd1684e76c0d9b87ff7354eae9e455317a6 --title "DevotionFlow v0.2.14" --notes "重播回到开头后自动开始下一轮，观看达到 95% 后继续登记；移除手动开始新一轮按钮。移除内置广告拦截、网页过滤和自动跳广告，升级时停用旧拦截设置。三平台测试、界面检查及安装包启动检查通过。"
