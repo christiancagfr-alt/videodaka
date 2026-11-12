@@ -22,7 +22,8 @@ class SecurityTests(unittest.TestCase):
             from_path=Path(directory)/'ffmpeg.exe'; from_path.write_bytes(b'')
             self.assertEqual(find_ffmpeg(str(saved),which=lambda _name:''),str(saved.resolve()))
             self.assertEqual(find_ffmpeg('',which=lambda name:str(from_path) if name=='ffmpeg.exe' else ''),str(from_path.resolve()))
-            self.assertEqual(find_ffmpeg('',which=lambda _name:''),'')
+            with patch('app.downloads.Path.is_file',return_value=False):
+                self.assertEqual(find_ffmpeg('',which=lambda _name:''),'')
 
     def test_update_version_parsing(self):
         self.assertEqual(version_tuple('v1.2.3'),(1,2,3))

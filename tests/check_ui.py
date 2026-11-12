@@ -14,17 +14,11 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     root=Path(directory)
     window=Window(root,offline=True)
     window.timer.stop(); window.retry.stop(); window.sync=lambda *args,**kwargs:None
-    assert window.ad_blocker.enabled and 'ad_block' in window.settings_page.fields
-    assert window.youtube_adblock_script is not None
-    assert window.ad_blocker.enabled
-    assert 'ad_block_page_script' in window.settings_page.fields
-    assert window.profile.scripts().find('DevotionFlow YoutubeAdblock 0.8.2')
-    assert not hasattr(window,'extension_manager')
-    assert "!video || !id || document.querySelector('.ad-showing')" not in window.probe
-    assert 'adShowing' in window.probe and 'playing:!adShowing' in window.probe
-    assert 'ad_domains' in window.settings_page.fields
-    assert 'doubleclick.net' in window.settings_page.fields['ad_domains'].toPlainText()
-    assert 'tanx.com' in window.settings_page.fields['ad_domains'].toPlainText()
+    assert not hasattr(window,'ad_blocker')
+    assert not window.profile.scripts().find('DevotionFlow YoutubeAdblock 0.8.2')
+    assert all(k not in window.settings_page.fields for k in ('ad_block','ad_block_page_script','ad_domains'))
+    assert 'trySkip' not in window.probe
+    assert all(button.text()!='开始新一轮观看' for button in window.findChildren(QPushButton))
     assert all('扩展' not in button.text() for button in window.settings_page.findChildren(QPushButton))
     assert window.update_button.text()=='检查更新'
     assert [button.text() for button in window.nav_buttons][-2:]==['◴  播放历史','▤  登记记录']
@@ -35,21 +29,6 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     assert window.calendar.day_colors[0]=='#65b885'
     window.cfg['theme']='sage'; window.apply_theme()
     assert all(button.text()!='检查软件更新' for button in window.settings_page.findChildren(QPushButton))
-    window.settings_page.fields['ad_block_page_script'].setChecked(True); window.save_settings_page()
-    assert window.youtube_adblock_script is not None
-    window.settings_page.fields['ad_block_page_script'].setChecked(False); window.save_settings_page()
-    assert window.youtube_adblock_script is None
-    window.settings_page.fields['ad_block'].setChecked(False); window.save_settings_page()
-    assert not window.ad_blocker.enabled
-    assert window.youtube_adblock_script is None
-    window.settings_page.fields['ad_block'].setChecked(True); window.save_settings_page()
-    assert window.ad_blocker.enabled
-    assert window.youtube_adblock_script is None
-    window.settings_page.fields['ad_domains'].appendPlainText('manual.ads.example')
-    window.save_settings_page()
-    assert 'manual.ads.example' in window.cfg['ad_domains']
-    assert 'doubleclick.net' in window.cfg['ad_domains']
-    assert 'manual.ads.example' in window.ad_blocker.extra_domains
     window.cfg['operator']='测试'; window.category.setCurrentText('电影')
     tracker=window.tracker; tracker.video='test'; tracker.title='测试视频'; tracker.duration=100; tracker.intervals=[(0,95)]
     with patch.object(window,'current_page_video_id',return_value='test'):
@@ -76,15 +55,17 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             window.store.db.execute("UPDATE records SET config=?,error='' WHERE id=?",
                                     (json.dumps(record_cfg),row['id']))
         window.cfg['mode']='local'
-    window.new_round(); tracker.intervals=[(0,95)]
+    tracker.sample(dict(id='test',title='测试视频',duration=100,position=0,clock=1000,playing=True,seeking=False,rate=1,adShowing=False))
+    assert not tracker.registered and tracker.watched==0
+    tracker.intervals=[(0,95)]
     with patch.object(window,'current_page_video_id',return_value='test'):
         window.show_tracking()
     assert len(window.store.records())==2
-    window.new_round(); tracker=window.tracker; tracker.intervals=[(0,42)]; tracker.position=55
+    window.tracker.reset(); tracker=window.tracker; tracker.intervals=[(0,42)]; tracker.position=55
     window.reflection.setPlainText('保留草稿'); window.category.setCurrentText('诗歌'); window.save_draft()
     window.restore_draft('test'); assert window.tracker.watched==42 and window.resume_position==55
     assert window.reflection.toPlainText()=='保留草稿' and window.category.currentText()=='诗歌'
-    window.new_round(); tracker=window.tracker; tracker.video='abcdefghijk'; tracker.title='记忆点续播测试'; tracker.duration=1800; tracker.intervals=[(0,22.7)]
+    window.tracker.reset(); tracker=window.tracker; tracker.video='abcdefghijk'; tracker.title='记忆点续播测试'; tracker.duration=1800; tracker.intervals=[(0,22.7)]
     window.category.setCurrentText('诗歌')
     with patch.object(window,'current_page_video_id',return_value='abcdefghijk'):
         window.show_tracking(); assert window.submit.isEnabled()

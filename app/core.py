@@ -15,8 +15,8 @@ DEFAULTS = dict(operator='', mode='local', credentials='', log_id='', log_sheet=
                 summary_id='', summary_sheet='10月', date_row=1, category_row=2,
                 name_col=1, first_person_row=5, reflection_header='认识', daily_goal=2,
                 monthly_goal=50, theme='sage', avatar='🌱', avatar_path='', sidebar_collapsed=False, mood='平静', categories=[],
-                download_dir='', download_quality='1080', ffmpeg_path='', watch_download=False, auto_install_ffmpeg=True, ad_block=True,
-                ad_block_page_script=True,
+                download_dir='', download_quality='1080', ffmpeg_path='', watch_download=False, auto_install_ffmpeg=True, ad_block=False,
+                ad_block_page_script=False,
                 ad_domains=[],
                 screenshot_dir='', screenshot_interval=0,
                 log_header_row=1, category_sheet='分类', category_col=1, oauth_client_file='',oauth_connected=False,oauth_email='')
@@ -44,12 +44,9 @@ class Store:
     def config(self):
         p = self.root / 'settings.json'
         cfg = DEFAULTS | (json.loads(p.read_text('utf-8')) if p.exists() else {})
-        # 0.2.10 introduced the optional page script disabled by default.
-        # Migrate that release's implicit default once so existing users keep
-        # the video-ad filtering they had before; users can still turn it off.
-        if not cfg.get('ad_block_page_script_compat_migrated'):
-            if cfg.get('ad_block', True): cfg['ad_block_page_script'] = True
-            cfg['ad_block_page_script_compat_migrated'] = True
+        # Disable removed filtering for existing installations as well.
+        if cfg.get('ad_block') or cfg.get('ad_block_page_script') or cfg.get('ad_domains'):
+            cfg.update(ad_block=False,ad_block_page_script=False,ad_domains=[])
             self.save_config(cfg)
         return cfg
     def save_config(self, cfg):
@@ -190,6 +187,12 @@ class Tracker:
         if not math.isfinite(self.duration): self.duration=0
         self.ad_showing=bool(s.get('adShowing',False))
         p=float(s['position']); now=float(s['clock'])
+        # Arm a fresh round only on a replay near the beginning, never on ads
+        # or a stationary completed frame. Restored completed drafts work too.
+        if (self.registered and not self.ad_showing and s.get('playing')
+                and not s.get('seeking') and self.duration>0
+                and p<=min(5.,self.duration*.05)):
+            self.reset()
         if self.last and self.duration > 0:
             old=self.last; dt=(now-old['clock'])/1000; delta=p-old['position']
             if old['playing'] and s['playing'] and not s.get('seeking') and not old.get('seeking') and 0<dt<=2 and 0<delta<=dt*old.get('rate',1)+.35:

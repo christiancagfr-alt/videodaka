@@ -13,14 +13,13 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
     QPushButton,QLineEdit,QTextEdit,QComboBox,QProgressBar,QSplitter,QTabWidget,QCalendarWidget,
     QDialog,QFormLayout,QSpinBox,QDialogButtonBox,QFileDialog,QMessageBox,QTableWidget,QTableWidgetItem,QScrollArea,QGridLayout,QFrame,QStackedWidget,QCheckBox,QPlainTextEdit,QHeaderView)
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineProfile,QWebEnginePage,QWebEngineSettings,QWebEngineScript
+from PySide6.QtWebEngineCore import QWebEngineProfile,QWebEnginePage,QWebEngineSettings
 from .core import (Store,Tracker,DEFAULTS,MIN_QUALIFYING_VIDEO_SECONDS,
                    MIN_WATCH_RATIO,DAILY_QUALIFIED_GOAL,GROWTH_TO_MATURE_DAYS,is_qualified_record,growth_stage)
 from .sync import sync_pending,sync_status_message,GoogleSheets
 from .downloads import DownloadDialog
 from .capture import CAPTURE_VIDEO_RECT_SCRIPT,seek_video_script
 from .security import safe_error,is_youtube_url,is_youtube_video_url,validate_sample,valid_video_id
-from .adblock import AD_HOSTS,YouTubeAdBlocker,normalize_ad_domains,youtube_adblock_injection_source
 
 _BACKGROUND_WORKERS=set()
 
@@ -113,25 +112,15 @@ class Settings(QDialog):
             back=QPushButton('← 返回播放与登记'); back.setObjectName('secondary'); back.clicked.connect(lambda:parent.select_page(0)); layout.addWidget(back); self.back_to_player=back
         else: self.back_to_player=None
         scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); form=QFormLayout(body); scroll.setWidget(body); layout.addWidget(scroll)
-        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期或月日）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','ad_block':'YouTube 广告拦截','ad_block_page_script':'启用 YouTube 网页级拦截脚本（可能影响交互）','ad_domains':'本地广告域名','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
+        labels={'operator':'登记人姓名','mode':'同步模式','credentials':'Google 桌面应用 OAuth JSON','log_id':'日志表 ID','log_sheet':'日志工作表','summary_id':'汇总表 ID','summary_sheet':'汇总工作表', 'date_row':'日期表头行（完整日期或月日）','category_row':'分类表头行','name_col':'姓名列（A=1）','first_person_row':'人员起始行','reflection_header':'观后感栏标题','daily_goal':'每日合格目标','monthly_goal':'月度合格目标','theme':'主题','avatar':'头像符号 / Emoji','mood':'今日心情','log_header_row':'日志表头行','category_sheet':'分类来源工作表（可空）','category_col':'分类来源列'}
         for k,label in labels.items():
             if k=='avatar': k='avatar_path'; label='头像图片'
-            sections={'operator':'登记人设置','credentials':'Google 账号连接','log_id':'谷歌表格绑定','date_row':'表格字段映射','daily_goal':'日历与成长目标','theme':'外观与个人资料','ad_block':'浏览体验','watch_download':'下载设置','log_header_row':'日志与分类字段映射'}
+            sections={'operator':'登记人设置','credentials':'Google 账号连接','log_id':'谷歌表格绑定','date_row':'表格字段映射','daily_goal':'日历与成长目标','theme':'外观与个人资料','watch_download':'下载设置','log_header_row':'日志与分类字段映射'}
             if k in sections:
                 heading=QLabel(sections[k]); heading.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(heading)
             v=cfg[k]
             if k=='watch_download':
                 widget=QCheckBox('播放时自动下载当前视频'); widget.setChecked(bool(v))
-            elif k=='ad_block':
-                widget=QCheckBox('拦截常见 YouTube 广告与广告请求'); widget.setChecked(bool(v))
-            elif k=='ad_block_page_script':
-                widget=QCheckBox('启用 YouTube 网页级拦截脚本（可能影响交互）'); widget.setChecked(bool(v))
-            elif k=='ad_domains':
-                from PySide6.QtWidgets import QPlainTextEdit
-                try: user_domains=normalize_ad_domains(v if isinstance(v,list) else [])
-                except ValueError: user_domains=[]
-                widget=QPlainTextEdit('\n'.join(sorted(AD_HOSTS|set(user_domains)))); widget.setMaximumHeight(180)
-                widget.setPlaceholderText('每行一个域名，例如：ads.example.com')
             elif k=='auto_install_ffmpeg':
                 widget=QCheckBox('缺少 FFmpeg 时自动安装'); widget.setChecked(bool(v))
             elif k in ('mode','theme','download_quality'):
@@ -163,18 +152,8 @@ class Settings(QDialog):
             elif k in ('download_dir','ffmpeg_path'):
                 row=QWidget(); line=QHBoxLayout(row); line.setContentsMargins(0,0,0,0); line.addWidget(widget,1)
                 choose=QPushButton('选择…'); choose.clicked.connect(lambda checked=False,key=k:self.choose_download_path(key)); line.addWidget(choose); form.addRow(label,row)
-            elif k in ('watch_download','auto_install_ffmpeg','ad_block','ad_block_page_script'):
+            elif k in ('watch_download','auto_install_ffmpeg'):
                 form.addRow(widget)
-                if k=='ad_block':
-                    note=QLabel('启用本地广告域名过滤和兼容模式的 YouTube 网页拦截，拦截广告请求及页面广告。兼容模式关闭容易影响播放器交互的深层钩子。')
-                    note.setWordWrap(True); form.addRow(note)
-                if k=='ad_block_page_script':
-                    note=QLabel('关闭此项会停用网页级过滤，主要依靠本地广告域名列表，视频内广告可能重新出现。保存后刷新页面生效。')
-                    note.setWordWrap(True); form.addRow(note)
-            elif k=='ad_domains':
-                form.addRow('本地广告域名（每行一个）',widget)
-                note=QLabel('已预填常见广告投放、竞价交换、追踪统计及部分中文广告域名；可在末尾继续追加。保存后会拦截列表中的域名及子域名。请勿添加 Google 登录、YouTube、googlevideo.com 等视频域名。最多 500 条，保存在本机。')
-                note.setWordWrap(True); form.addRow(note)
             else: form.addRow(label,widget)
         section=QLabel('下载设置'); section.setStyleSheet('font-size:18px;font-weight:600;padding:18px 0 8px;'); form.addRow(section)
         download_button=QPushButton('打开独立下载设置…'); download_button.clicked.connect(parent.open_download_settings); form.addRow(download_button)
@@ -221,8 +200,7 @@ class Settings(QDialog):
     def values(self):
         result={}
         for k,w in self.fields.items():
-            if k=='ad_domains': result[k]=normalize_ad_domains(w.toPlainText())
-            elif isinstance(w,QSpinBox): result[k]=w.value()
+            if isinstance(w,QSpinBox): result[k]=w.value()
             elif isinstance(w,QCheckBox): result[k]=w.isChecked()
             elif k=='theme': result[k]=w.currentData()
             elif isinstance(w,QComboBox): result[k]=w.currentText()
@@ -332,9 +310,6 @@ class ReviewChart(QWidget):
 class Window(QMainWindow):
     def __init__(self,root,offline=False):
         super().__init__(); self.store=Store(root); self.cfg=self.store.config(); self.tracker=Tracker(); self.worker=None; self.oauth_worker=None; self.offline=offline
-        try: self.cfg['ad_domains']=normalize_ad_domains(self.cfg.get('ad_domains',[]))
-        except ValueError:
-            self.cfg['ad_domains']=[]; self.store.save_config(self.cfg)
         self.remove_legacy_extension_source()
         self.setWindowTitle('静心 · 视频学习与灵修'); self.resize(1420,930)
         icon=QIcon(str(Path(__file__).resolve().parents[1]/'assets'/'devotionflow.png'))
@@ -351,11 +326,7 @@ class Window(QMainWindow):
         self.profile.setCachePath(str(Path(root).resolve()/'browser-cache'))
         self.profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
         self.profile.setHttpAcceptLanguage('zh-CN,zh;q=0.9,en;q=0.7')
-        self.ad_blocker=YouTubeAdBlocker(self.profile,self.cfg.get('ad_domains',[]))
-        self.ad_blocker.enabled=bool(self.cfg.get('ad_block',True))
-        self.profile.setUrlRequestInterceptor(self.ad_blocker)
         self.browser.setPage(BrowserPage(self.profile,self.browser))
-        self._sync_youtube_adblock_script()
         for attribute in (QWebEngineSettings.LocalContentCanAccessFileUrls,QWebEngineSettings.LocalContentCanAccessRemoteUrls,QWebEngineSettings.JavascriptCanAccessClipboard,QWebEngineSettings.JavascriptCanPaste):
             self.browser.settings().setAttribute(attribute,False)
         self.address=QLineEdit('https://www.youtube.com'); self.address.returnPressed.connect(self.navigate)
@@ -371,7 +342,6 @@ class Window(QMainWindow):
         refresh=QPushButton('读取在线历史分类'); refresh.clicked.connect(self.categories); form.addWidget(refresh); self.category_refresh_button=refresh
         self.reflection=QTextEdit(); self.reflection.setPlaceholderText('今天有哪些触动？记录你的认识与感想（选填）'); form.addWidget(self.reflection)
         self.submit=QPushButton(self.registration_button_text()); self.submit.setMinimumHeight(46); self.submit.clicked.connect(self.register); form.addWidget(self.submit)
-        reset=QPushButton('开始新一轮观看'); reset.clicked.connect(self.new_round); form.addWidget(reset)
         self.status=QLabel('登记后先保存本地，再同步。'); self.status.setWordWrap(True); form.addWidget(self.status); form.addStretch()
         habit=QWidget(); hl=QVBoxLayout(habit); tabs.addTab(habit,'成长看板')
         self.tree=QLabel(); self.tree.setWordWrap(True); self.tree.setStyleSheet('font-size:22px'); hl.addWidget(self.tree)
@@ -400,7 +370,7 @@ class Window(QMainWindow):
         self.completion_confirm_checkbox.setVisible(False)
         self.completion_confirm_checkbox.toggled.connect(self.manual_confirmation_changed)
         jl.addWidget(self.completion_confirm_checkbox)
-        actions=QHBoxLayout(); self.submit.setObjectName('primary'); actions.addWidget(self.submit,1); actions.addWidget(reset); jl.addLayout(actions); jl.addWidget(self.status); ll.addWidget(journal)
+        actions=QHBoxLayout(); self.submit.setObjectName('primary'); actions.addWidget(self.submit,1); jl.addLayout(actions); jl.addWidget(self.status); ll.addWidget(journal)
         self.browser.setMinimumHeight(300); ll.setStretch(1,1)
         split.setSizes([790,610]); dashboard.setMinimumWidth(560); self.resize(1480,960)
         self._probe_pending=False
@@ -719,20 +689,6 @@ class Window(QMainWindow):
     def select_page(self,index):
         self.pages.setCurrentIndex(index)
         for i,button in enumerate(self.nav_buttons): button.setChecked(i==index)
-    def _sync_youtube_adblock_script(self):
-        scripts=self.profile.scripts()
-        for previous in scripts.find('DevotionFlow YoutubeAdblock 0.8.2'):
-            scripts.remove(previous)
-        self.youtube_adblock_script=None
-        if not self.cfg.get('ad_block',True) or not self.cfg.get('ad_block_page_script',False): return
-        script=QWebEngineScript()
-        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
-        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld); script.setRunsOnSubFrames(False)
-        try: script.setSourceCode(youtube_adblock_injection_source())
-        except (OSError,UnicodeError,RuntimeError) as exc:
-            self.banner.setText('本地广告脚本未能加载，基础域名过滤仍可使用：'+str(exc)); return
-        script.setName('DevotionFlow YoutubeAdblock 0.8.2')
-        scripts.insert(script); self.youtube_adblock_script=script
     def remove_legacy_extension_source(self):
         """Remove only the app-managed source copy; avoid the unstable Qt extension API."""
         had_legacy_config='browser_extension_dir' in self.cfg or 'browser_extension_name' in self.cfg
@@ -749,10 +705,9 @@ class Window(QMainWindow):
         self.save_draft(); old_scope=self.draft_scope()
         try: values=self.settings_page.values()
         except ValueError as exc:
-            QMessageBox.warning(self,'广告域名无效',str(exc)); return
+            QMessageBox.warning(self,'设置无效',str(exc)); return
         self.cfg.update(values); self.cfg['daily_goal']=DAILY_QUALIFIED_GOAL
-        self.ad_blocker.enabled=bool(self.cfg.get('ad_block',True)); self.ad_blocker.set_domains(self.cfg.get('ad_domains',[]))
-        self._sync_youtube_adblock_script(); self.store.save_config(self.cfg); self.apply_theme(); self.refresh(); self.banner.setText('设置已保存 · 网页级广告脚本在下次打开或刷新 YouTube 时生效。')
+        self.store.save_config(self.cfg); self.apply_theme(); self.refresh(); self.banner.setText('设置已保存。')
         if old_scope!=self.draft_scope() and self.tracker.video: self.restore_draft(self.tracker.video)
     def reload_settings_page(self):
         for key,widget in self.settings_page.fields.items():
@@ -946,10 +901,6 @@ class Window(QMainWindow):
         if t.can_auto_register(self.cfg['operator'],self.category.currentText()): self.register(automatic=True)
         elif ratio>=MIN_WATCH_RATIO and not t.registered and t.video!='local-demo':
             self.status.setText('短视频达到观看门槛，将正常登记但不计成长养分。' if t.duration<MIN_QUALIFYING_VIDEO_SECONDS else '已达到观看门槛，填写登记人和分类后将自动登记。')
-    def new_round(self):
-        self.tracker.reset(); self.manual_register_pending=False; self.completion_confirm_checkbox.setChecked(False)
-        self.completion_confirm_checkbox.setVisible(False); self.submit.setText(self.registration_button_text())
-        self.save_draft(); self.show_tracking(); self.status.setText('已开始新一轮，请从视频开头播放。')
     def manual_confirmation_changed(self,checked):
         ratio=self.tracker.watched/self.tracker.duration if self.tracker.duration else 0
         self.submit.setText('确认达标并登记' if checked else ('按未达标登记' if ratio<MIN_WATCH_RATIO else self.registration_button_text()))
@@ -981,7 +932,7 @@ class Window(QMainWindow):
         underqualified='（本软件记录低于 95%，已保存为未达标观看记录）' if ratio<MIN_WATCH_RATIO and not completion_confirmed and not automatic else ''
         saved='达到 95%，已自动登记。' if automatic else '登记已保存到本地。'+confirmation+underqualified
         if self.cfg.get('mode')=='google': saved+=' 正在同步 Google Sheets。'
-        self.status.setText(saved+'本轮不会重复提交；再次观看请点击“开始新一轮观看”。')
+        self.status.setText(saved+'本轮已完成；重播回到开头后自动开始下一轮，观看达标会再次登记。')
         self.sync(manual=not automatic)
     def retry_failed_records(self):
         if getattr(self,'worker',None) and self.worker.isRunning():

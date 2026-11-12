@@ -276,13 +276,12 @@ class Tests(unittest.TestCase):
         r=self.record() | {'timestamp':'2024-02-29T10:00:00+00:00'}
         self.assertEqual(locate([['','02-29',''],['姓名','电影','认识'],['测试者']],
                                 self.cfg | {'first_person_row':3},r),(3,2,3))
-    def test_page_adblock_compatibility_migrates_once(self):
-        self.store.save_config(DEFAULTS|{'ad_block':True,'ad_block_page_script':False})
+    def test_old_adblock_settings_are_disabled(self):
+        self.store.save_config(DEFAULTS | {'ad_block':True,'ad_block_page_script':True,'ad_domains':['ads.example.com']})
         migrated=self.store.config()
-        self.assertTrue(migrated['ad_block_page_script'])
-        self.assertTrue(migrated['ad_block_page_script_compat_migrated'])
-        migrated['ad_block_page_script']=False; self.store.save_config(migrated)
-        self.assertFalse(self.store.config()['ad_block_page_script'])
+        self.assertFalse(migrated['ad_block'])
+        self.assertFalse(migrated['ad_block_page_script'])
+        self.assertEqual(migrated['ad_domains'],[])
     def test_real_sample_mapping(self):
         import openpyxl
         path=Path(__file__).resolve().parents[1]/'视频数据表.xlsx'
